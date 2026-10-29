@@ -46,3 +46,11 @@ Gameplay code never imports three.js (except views), so all logic runs headless 
 - Kick contact delayed to the animation's contact frame — the foot visibly hits the ball.
 - Away kit auto-switches when shirt colours are too close (`colourDistance` < 140).
 - Single-file build (vite-plugin-singlefile) so the game can be shared as one HTML page.
+
+## Revamp additions
+- `src/render/quality.ts` — FPS guard and DPR control; decides whether `render/post.ts` is used.
+- `src/ui/settings.ts` — Settings type, load/save, settings panel.
+- `src/render/camera.ts` — `BroadcastCamera.update(dt, CamInput)` with six camera types; `shot()` for replays.
+- `src/match/control.ts` — `carryBall` (touch dribble), `firstTouch`, `stealLooseTouch`.
+- `src/match/human.ts` — assisted collection, contain, `nextSwitch`/`autoSwitch` modes; consumes `s.tapPass`.
+- State additions: `humanMove`, `assist`, `lastSwitchT`, `nextSwitch`, `time`, `tapPass`; Player `touchTimer`.

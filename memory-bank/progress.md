@@ -40,3 +40,13 @@ Log of completed and validated steps. Newest at the bottom.
 - **B. Rendering:** postprocessing + N8AO (AO, bloom, ACES, grade, vignette, SMAA); physical sky + image-based lighting; Day / Evening / Night (floodlit) kick-off; grass normal map + sheen; 4096 shadows; GPU-animated crowd; roof trusses; corner flags; slow-motion goal replays from two camera angles (skippable). Adaptive quality drops AO/resolution on weak devices.
 - **C. Depth:** fouls judged per tackle (from behind / contact), yellow and red cards (second yellow = red, player sent off), free kicks with a 9.15 m wall, penalties (box cleared, keeper guesses; the human picks the dive side with W/S), offside on passes (indirect free kick), finesse (O) and chip (L near goal) shots, difficulty (Amateur / Pro / World Class), gamepad (standard mapping).
 - 43 tests passing. Build is a single 2.1 MB HTML file.
+
+## Revamp for iPhone (Oct 2026) — done
+- Renderer: render interpolation between 60 Hz sim steps (main.ts snapshot/alpha); phones render at DPR 2 with MSAA and no post stack; post (AO/bloom) only on desktop or Graphics=Quality; `render/quality.ts` lowers DPR gently (min 1.25) only after a 6 s warm-up; shaders precompiled at match start; sun shadow box follows the ball (`followShadow`).
+- Look: new stadium bowl, instanced billboard crowd, LED boards (text fitted), darker mowed pitch, night lighting toned down.
+- Cameras: Tele Broadcast, Co-op, Dynamic, End to End, Pro, Broadcast with Height/Zoom 0–20 (`ui/settings.ts`, ⚙ button and pause menu). Settings saved in localStorage.
+- Ball control: touch-based dribbling (`carryBall`): real touches on a rhythm, lead grows with speed, cut/effort touch on sharp turns, ball lost beyond 2.3 m; `firstTouch` clean/heavy model; `stealLooseTouch` between touches.
+- Assists: run to loose balls within 14 m, auto sprint at stick rim (phone default), hold PASS to contain, PASS near carrier = tackle, SHOOT = lunge; auto-switch Auto/Loose/Manual with hysteresis; switch picks fastest interceptor.
+- Phone: floating joystick (left 42%), contextual button labels when defending, tap a teammate to pass.
+- Hosting: repo dawood652/pitchside, playable build in docs/. Pages must be switched on in repo Settings → Pages (main, /docs).
+- Tests: 45 passing (new tests/dribble.test.ts).
