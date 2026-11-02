@@ -15,7 +15,7 @@ export interface Settings {
   showFps: boolean;
 }
 
-const KEY = 'pitchside.settings.v1';
+const KEY = 'pitchside.settings.v2'; // v2: sprint-by-default
 
 export function defaultSettings(mobile: boolean): Settings {
   return {
@@ -25,7 +25,7 @@ export function defaultSettings(mobile: boolean): Settings {
     graphics: 'auto',
     autoSwitch: 'auto',
     collectAssist: true,
-    autoSprint: mobile,
+    autoSprint: true,
     showFps: false,
   };
 }

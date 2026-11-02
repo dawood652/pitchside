@@ -328,6 +328,7 @@ function snapshot(into?: Snap): Snap {
 prev = snapshot();
 const ballR = new THREE.Vector3();
 const ballV = new THREE.Vector3();
+const camDir = new THREE.Vector3();
 const focus = new THREE.Vector3();
 const playerR = new THREE.Vector3();
 const lerpAngle = (a: number, b: number, t: number) => a + Math.atan2(Math.sin(b - a), Math.cos(b - a)) * t;
@@ -386,6 +387,11 @@ startLoop(
       cam.mode = s.phase === 'goal' && s.phaseT > 0.6 ? 'celebrate' : 'play';
       ballV.set(s.ball.vel.x, 0, s.ball.vel.z);
       const sc = s.scorer ? new THREE.Vector3(s.scorer.pos.x, 0, s.scorer.pos.z) : undefined;
+      // Controls follow the view: side cameras keep a fixed frame, end-to-end and pro turn with the camera
+      if (settings.camera === 'endtoend' || settings.camera === 'pro') {
+        world.camera.getWorldDirection(camDir);
+        s.viewYaw = Math.atan2(-camDir.x, -camDir.z);
+      } else s.viewYaw = 0;
       cam.update(fdt, { ball: ballR, ballVel: ballV, player: playerR, playerFacing: c.facing, attackDir: s.attackDir[s.humanTeam], subject: sc });
     }
     // Shadows follow the action

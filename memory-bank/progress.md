@@ -50,3 +50,9 @@ Log of completed and validated steps. Newest at the bottom.
 - Phone: floating joystick (left 42%), contextual button labels when defending, tap a teammate to pass.
 - Hosting: repo dawood652/pitchside, playable build in docs/. Pages must be switched on in repo Settings → Pages (main, /docs).
 - Tests: 45 passing (new tests/dribble.test.ts).
+
+## Gameplay pass 2 (Nov 2026)
+- Football mocap (Anderson Rohr pack 05, UE5 rig) retargeted by `tools/add-mocap.mjs` (clip list in `tools/mocap-clips.mjs`) into player.glb as `mc_*`: pass, shot, throw-in, standing tackle, keeper catches, celebrations; mirrored copies for left-footed players.
+- PS5/FC controller layout: Cross pass, Square shoot, Circle lob (defending: standing tackle), Triangle through, L1 switch, right-stick flick switch, R1 finesse, R2 sprint; sprint is default at full stick tilt.
+- Controls are camera-relative (`s.viewYaw`) for End to End and Pro cameras.
+- Passing: lane-aware receiver pick, firmer passes, quicker contact (CONTACT 0.3), re-aimed at contact. Receiving: mostly clean first touch for planned receivers, bigger control radius. Dribbling: shorter knock-ons, fewer steals, fewer CPU tackles. Auto-switch calmer (never while the stick is in use).

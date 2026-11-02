@@ -91,8 +91,8 @@ export function carryBall(s: MatchState, dt: number): void {
   if (!cut && (o.touchTimer > 0 || dBall > 1.05)) return;
   // Touch: aim the ball where the player will be at the next touch, plus a lead that grows with speed
   const sprinting = sp > PLAYER.jogSpeed + 0.4;
-  let interval = (sprinting ? 0.52 : sp > 2.5 ? 0.34 : 0.26) * (1.12 - 0.22 * skill);
-  let lead = sprinting ? 0.85 + (sp - 5.6) * 0.1 : 0.5 + sp * 0.05;
+  let interval = (sprinting ? 0.42 : sp > 2.5 ? 0.3 : 0.24) * (1.12 - 0.22 * skill);
+  let lead = sprinting ? 0.68 + (sp - 5.6) * 0.06 : 0.45 + sp * 0.04;
   if (turn > 1.6) {
     // Effort touch on a drastic turn: slower, shorter, and you bleed speed
     lead = 0.45;
@@ -127,8 +127,9 @@ export function firstTouch(s: MatchState, p: Player, wantDir: { x: number; z: nu
   const skill = (p.ratings.dribbling - 60) / 35;
   const dir = wantDir ?? p.forward;
   const exitTurn = Math.abs(angleDiff(Math.atan2(b.vel.x, b.vel.z) + Math.PI, Math.atan2(dir.x, dir.z)));
-  const difficulty = rel / 24 + Math.max(0, b.pos.y - 0.5) * 0.5 + (pressure < 1.6 ? 0.2 : 0) + (exitTurn < 1 ? 0.12 : 0) - skill * 0.35;
-  const heavy = Math.random() < Math.max(0, Math.min(0.6, difficulty - 0.38));
+  const planned = s.intendedReceiver === p;
+  const difficulty = rel / 24 + Math.max(0, b.pos.y - 0.6) * 0.5 + (pressure < 1.4 ? 0.15 : 0) + (exitTurn < 1 ? 0.1 : 0) - skill * 0.35 - (planned ? 0.25 : 0);
+  const heavy = Math.random() < Math.max(0, Math.min(0.3, (difficulty - 0.75) * 0.8));
   if (heavy) {
     // Heavy touch: the ball bounces off and runs loose
     const sp = 3.5 + Math.random() * 3.5;
@@ -138,13 +139,15 @@ export function firstTouch(s: MatchState, p: Player, wantDir: { x: number; z: nu
     return;
   }
   // Clean touch into the direction asked for
-  const tx = p.pos.x + dir.x * (0.55 + p.speed * 0.15);
-  const tz = p.pos.z + dir.z * (0.55 + p.speed * 0.15);
-  b.vel = { x: (tx - b.pos.x) / 0.28, y: 0, z: (tz - b.pos.z) / 0.28 };
+  // Cushioned touch that sets the ball just ahead of the feet in the direction asked for
+  const tx = p.pos.x + dir.x * (0.45 + p.speed * 0.12);
+  const tz = p.pos.z + dir.z * (0.45 + p.speed * 0.12);
+  b.vel = { x: (tx - b.pos.x) / 0.3 + p.vel.x * 0.3, y: 0, z: (tz - b.pos.z) / 0.3 + p.vel.z * 0.3 };
   const v = Math.hypot(b.vel.x, b.vel.z);
-  if (v > 9) {
-    b.vel.x *= 9 / v;
-    b.vel.z *= 9 / v;
+  const cap = Math.max(4, p.speed + 1.5);
+  if (v > cap) {
+    b.vel.x *= cap / v;
+    b.vel.z *= cap / v;
   }
   b.pos.y = BALL.radius;
   p.touchTimer = 0.26;
@@ -156,11 +159,11 @@ export function stealLooseTouch(s: MatchState): void {
   if (!o || o.holdingBall || s.pending) return;
   const b = s.ball;
   const own = Math.hypot(b.pos.x - o.pos.x, b.pos.z - o.pos.z);
-  if (own < 0.7) return;
+  if (own < 0.85) return;
   for (const p of s.players) {
     if (p.team === o.team || p.sentOff || p.stun > 0 || p.lockout > 0 || (p.busy && p.action !== 'tackle')) continue;
     const d = Math.hypot(b.pos.x - p.pos.x, b.pos.z - p.pos.z);
-    if (d < 0.7 && d < own - 0.15) {
+    if (d < 0.5 && d < own - 0.3) {
       setOwner(s, p);
       firstTouch(s, p, null);
       s.events.push({ type: 'tackle', won: true });

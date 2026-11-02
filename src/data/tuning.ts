@@ -36,7 +36,7 @@ export const PLAYER = {
   dribbleSprint: 7.1,
   accel: 14,
   turnRate: 11, // rad/s
-  controlRadius: 0.95,
+  controlRadius: 1.15,
   controlMaxBallHeight: 0.9,
   headerMinHeight: 1.25,
   headerMaxHeight: 2.6,
@@ -46,9 +46,9 @@ export const PLAYER = {
 };
 
 export const KICK = {
-  passEndSpeed: 4.0,
+  passEndSpeed: 6.5, // ground passes still arrive firmly
   passMax: 30,
-  passMin: 9,
+  passMin: 11,
   throughLead: 7,
   shotMin: 14,
   shotMax: 32,

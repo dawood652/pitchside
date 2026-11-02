@@ -13,7 +13,7 @@ export function createTouchControls(parent: HTMLElement, input: Input): HTMLDivE
       <button data-a="shoot" class="main" aria-label="Shoot (hold for power) / slide tackle">${lab('SHOOT', 'SLIDE')}</button>
       <button data-a="pass" class="main" aria-label="Pass / hold to press, tap to tackle">${lab('PASS', 'PRESS')}</button>
       <button data-a="through">${lab('THRU', '—')}</button>
-      <button data-a="lob">${lab('LOB', '—')}</button>
+      <button data-a="lob">${lab('LOB', 'TACKLE')}</button>
       <button data-a="finesse">${lab('CURL', '—')}</button>
       <button data-a="sprint">SPRINT</button>
       <button data-a="switch">SWITCH</button>

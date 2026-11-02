@@ -141,7 +141,7 @@ function press(s: MatchState, p: Player, humanTeam: boolean): void {
   p.sprint = Math.hypot(target.x - p.pos.x, target.z - p.pos.z) > 3;
   const dist = Math.hypot(o.pos.x - p.pos.x, o.pos.z - p.pos.z);
   const diff = s.humanActive && !humanTeam ? [0.7, 1, 1.35][s.difficulty] : 1;
-  const rate = humanTeam ? 0.4 : (0.45 + (p.ratings.defending - 60) / 90) * diff;
+  const rate = humanTeam ? 0.3 : (0.28 + (p.ratings.defending - 60) / 120) * diff;
   if (dist < 1.7 && Math.random() < rate * (1 / 60)) {
     p.faceTowards(s.ball.pos.x, s.ball.pos.z);
     tackle(p, dist > 1.1 && Math.random() < 0.35);

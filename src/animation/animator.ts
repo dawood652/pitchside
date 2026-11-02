@@ -69,11 +69,11 @@ export class PlayerAnimator {
     const foot = (right: string, left: string) => (p.leftFooted ? left : right);
     switch (p.action) {
       case 'pass':
-        return [foot('mc_pass', 'mc_pass_M'), 0.263, 1.5, false];
+        return [foot('mc_pass', 'mc_pass_M'), 0.31, 1.5, false];
       case 'lob':
-        return [foot('mc_pass', 'mc_pass_M'), 0.24, 1.4, false];
+        return [foot('mc_pass', 'mc_pass_M'), 0.3, 1.4, false];
       case 'shot':
-        return [foot('mc_shot_M', 'mc_shot'), 0.26, 1.3, false];
+        return [foot('mc_shot_M', 'mc_shot'), 0.31, 1.3, false];
       case 'throwin':
         return ['mc_throwin', 0.36, 1.2, false];
       case 'tackle':

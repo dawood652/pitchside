@@ -11,10 +11,19 @@ import { angleDiff, V2 } from '../core/vec';
 let charging = false;
 let chargeT = 0;
 
-/** Screen → world: camera sits on +z looking toward -z, so screen right = +x, screen up = -z. */
-function worldMove(input: Input): V2 {
-  const m = input.move();
-  return { x: m.x, z: -m.y };
+/**
+ * Screen → world, relative to the camera: with the broadcast view (viewYaw 0) screen right = +x and
+ * screen up = -z; other cameras (end to end, pro) rotate that by their yaw.
+ */
+function toWorld(s: MatchState, m: { x: number; y: number }): V2 {
+  const c = Math.cos(s.viewYaw);
+  const sn = Math.sin(s.viewYaw);
+  const x = m.x;
+  const z = -m.y;
+  return { x: x * c + z * sn, z: -x * sn + z * c };
+}
+function worldMove(s: MatchState, input: Input): V2 {
+  return toWorld(s, input.move());
 }
 
 export function pickReceiver(s: MatchState, p: Player, dir: V2): Player | null {
@@ -28,8 +37,19 @@ export function pickReceiver(s: MatchState, p: Player, dir: V2): Player | null {
     const d = Math.hypot(dx, dz);
     if (d < 3 || d > 55) continue;
     const da = Math.abs(angleDiff(aim, Math.atan2(dx, dz)));
-    if (da > 0.85) continue;
-    const cost = da * 22 + d * 0.35 + (m.role === 'GK' ? 25 : 0);
+    if (da > 0.9) continue;
+    // Opponents near the passing line make a teammate a worse choice (the pass would be cut out)
+    let block = 0;
+    for (const o of s.players) {
+      if (o.team === p.team || o.sentOff) continue;
+      const ox = o.pos.x - p.pos.x;
+      const oz = o.pos.z - p.pos.z;
+      const along = (ox * dx + oz * dz) / d;
+      if (along < 1 || along > d - 1) continue;
+      const off = Math.abs(ox * dz - oz * dx) / d;
+      if (off < 2.2) block += (2.2 - off) / 2.2;
+    }
+    const cost = da * 34 + d * 0.22 + block * 9 + (m.role === 'GK' ? 25 : 0);
     if (cost < bestCost) {
       bestCost = cost;
       best = m;
@@ -40,11 +60,13 @@ export function pickReceiver(s: MatchState, p: Player, dir: V2): Player | null {
 
 export function updateHuman(s: MatchState, input: Input, dt: number): void {
   const p = s.controlled;
-  const mv = worldMove(input);
+  const mv = worldMove(s, input);
+  if (input.rightStick) s.switchDir = toWorld(s, input.rightStick);
   const hasMove = Math.hypot(mv.x, mv.z) > 0.1;
   const dir = hasMove ? mv : p.forward;
   const mag = Math.hypot(mv.x, mv.z);
-  p.sprint = input.held('sprint') || (s.assist.autoSprint && mag > 0.92);
+  // Sprint is the default at full tilt (FC Mobile / most players' preference); R2 / Shift also sprints
+  p.sprint = input.held('sprint') || (s.assist.autoSprint && mag > 0.75);
   s.humanMove = hasMove ? { x: mv.x / mag, z: mv.z / mag } : null;
   s.diveHint = Math.abs(mv.z) > 0.3 ? Math.sign(mv.z) : 0;
 
@@ -92,6 +114,12 @@ export function updateHuman(s: MatchState, input: Input, dt: number): void {
   }
 
   if (input.pressed('switch')) switchPlayer(s);
+  if (s.switchDir && s.owner !== p) {
+    switchToward(s, s.switchDir);
+    s.switchDir = null;
+    return;
+  }
+  s.switchDir = null;
 
   const own = s.owner === p;
   if (own && !p.busy) {
@@ -182,11 +210,37 @@ export function updateHuman(s: MatchState, input: Input, dt: number): void {
   // Tackle: PASS when close (holding it from further away = contain), SHOOT lunges from a bit further
   if (opp) {
     const d = Math.hypot(opp.pos.x - p.pos.x, opp.pos.z - p.pos.z);
-    const stand = input.pressed('pass') && d < 2.6;
+    // FC layout: hold Cross = contain, Circle = standing tackle, Square = slide; tapping Cross
+    // right next to the carrier also tackles (touch screens have fewer buttons)
+    const stand = (input.pressed('lob') && d < 2.6) || (input.pressed('pass') && d < 1.6);
     if (stand || (input.pressed('shoot') && d < 3.2)) {
       p.faceTowards(s.ball.pos.x, s.ball.pos.z);
       tackle(p, !stand);
     }
+  }
+}
+
+/** Right-stick switch: the teammate furthest along the flicked direction from the controlled player. */
+export function switchToward(s: MatchState, dir: V2): void {
+  const c = s.controlled;
+  const aim = Math.atan2(dir.x, dir.z);
+  let best: Player | null = null;
+  let bestCost = 1e9;
+  for (const m of s.players) {
+    if (m.team !== s.humanTeam || m === c || m.role === 'GK' || m.sentOff) continue;
+    const dx = m.pos.x - c.pos.x;
+    const dz = m.pos.z - c.pos.z;
+    const da = Math.abs(angleDiff(aim, Math.atan2(dx, dz)));
+    if (da > 0.8) continue;
+    const cost = da * 20 + Math.hypot(dx, dz) * 0.3;
+    if (cost < bestCost) {
+      bestCost = cost;
+      best = m;
+    }
+  }
+  if (best) {
+    s.controlled = best;
+    s.lastSwitchT = s.time;
   }
 }
 
@@ -224,15 +278,15 @@ export function autoSwitch(s: MatchState): void {
   if (mode === 'manual') return;
   if (s.owner?.team === s.humanTeam) return;
   if (s.intendedReceiver?.team === s.humanTeam) return;
-  if (s.time - s.lastSwitchT < 1.0) return;
+  if (s.time - s.lastSwitchT < 2.0) return;
   if (mode === 'loose' && s.owner) return;
-  if (s.humanMove && s.time - s.lastSwitchT < 2) return;
+  if (s.humanMove) return; // never take the player away while the stick is being used
   const c = s.controlled;
   const best = s.nextSwitch;
   if (!best) return;
   const tc = intercept(c, s.ball).t;
   const tb = intercept(best, s.ball).t;
-  if (tc > 1.6 && tb < tc * 0.6) {
+  if (tc > 2.2 && tb < tc * 0.5) {
     s.controlled = best;
     s.lastSwitchT = s.time;
   }

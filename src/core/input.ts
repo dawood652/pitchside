@@ -15,10 +15,12 @@ const BINDINGS: Record<string, Action> = {
 };
 
 /** Xbox-style standard mapping: A pass, B shoot, X lob, Y through, LB switch, RB finesse, RT sprint, Start pause. */
+// PS5 DualSense / Xbox in the browser's standard layout, matching EA FC defaults:
+// Cross pass · Square shoot · Circle lob/cross · Triangle through · L1 switch · R1 finesse · R2 sprint · Options pause
 export const PAD_BUTTONS: [number, Action][] = [
   [0, 'pass'],
-  [1, 'shoot'],
-  [2, 'lob'],
+  [2, 'shoot'],
+  [1, 'lob'],
   [3, 'through'],
   [4, 'switch'],
   [5, 'finesse'],
@@ -38,6 +40,8 @@ export class Input {
   padConnected = false;
   /** True when the game is drawn rotated 90° (portrait phone): touch deltas must be rotated too. */
   rotated = false;
+  /** Right stick direction when flicked past 70% (screen space, y = up), else null. */
+  rightStick: { x: number; y: number } | null = null;
   private virtualHeld = new Set<Action>();
 
   constructor() {
@@ -76,10 +80,15 @@ export class Input {
       this.padHeld.clear();
       return;
     }
+    const rx = gp.axes[2] ?? 0;
+    const ry = gp.axes[3] ?? 0;
+    this.rightStick = Math.hypot(rx, ry) > 0.7 ? { x: rx, y: -ry } : null;
     const ax = gp.axes[0] ?? 0;
     const ay = gp.axes[1] ?? 0;
     const l = Math.hypot(ax, ay);
-    this.padMove = l < 0.22 ? { x: 0, y: 0 } : { x: ax / Math.max(1, l), y: -ay / Math.max(1, l) };
+    // Radial dead zone, rescaled so 90% tilt already counts as full (sprint) on worn sticks
+    const m = Math.min(1, Math.max(0, (l - 0.18) / 0.72));
+    this.padMove = m === 0 ? { x: 0, y: 0 } : { x: (ax / l) * m, y: (-ay / l) * m };
     const now = new Set<Action>();
     for (const [i, a] of PAD_BUTTONS) if (gp.buttons[i]?.pressed) now.add(a);
     for (const a of now) if (!this.padHeld.has(a)) this.pressedQ.add(a);

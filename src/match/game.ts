@@ -69,6 +69,8 @@ export class Game {
       nextSwitch: null,
       time: 0,
       tapPass: null,
+      viewYaw: 0,
+      switchDir: null,
     };
     this.setupKickoff(0);
   }

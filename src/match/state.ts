@@ -26,6 +26,8 @@ export type GameEvent =
 export interface PendingKick {
   player: Player;
   delay: number;
+  /** Where a pass is aimed (re-aimed from the ball's position at contact). */
+  target?: { x: number; z: number };
   vel: { vx: number; vy: number; vz: number; spin: number };
   receiver: Player | null;
   isShot: boolean;
@@ -84,6 +86,10 @@ export interface MatchState {
   time: number;
   /** Touch: teammate tapped on screen to receive a pass. */
   tapPass: Player | null;
+  /** Camera yaw (radians) so stick input is relative to the view; 0 = broadcast side view. */
+  viewYaw: number;
+  /** Right-stick switch request (world direction) from a controller. */
+  switchDir: { x: number; z: number } | null;
 }
 
 /** Helpers to convert between world coordinates and a team's attacking frame (+x attack). */

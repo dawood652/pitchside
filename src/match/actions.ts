@@ -10,7 +10,7 @@ import { clamp, V2 } from '../core/vec';
 export type PassKind = 'ground' | 'through' | 'lob';
 
 const KICK_DUR = { pass: 0.42, shot: 0.58, lob: 0.5 };
-const CONTACT = 0.42;
+const CONTACT = 0.3; // fraction of the kick action at which the foot meets the ball
 
 /** Lead a moving receiver: aim where he will be when the ball arrives. */
 function leadTarget(receiver: Player, from: V2, kind: PassKind, dirX: number): V2 {
@@ -52,7 +52,7 @@ export function passTo(s: MatchState, p: Player, receiver: Player | null, kind: 
   p.faceTowards(target.x, target.z);
   const dur = kind === 'lob' ? KICK_DUR.lob : KICK_DUR.pass;
   p.startAction(kind === 'lob' ? 'lob' : 'pass', dur, Math.min(1, Math.hypot(v.vx, v.vz) / 28));
-  s.pending = { player: p, delay: dur * CONTACT, vel: v, receiver, isShot: false, power: Math.min(1, Math.hypot(v.vx, v.vy, v.vz) / 30) };
+  s.pending = { player: p, delay: dur * CONTACT, vel: v, receiver, isShot: false, power: Math.min(1, Math.hypot(v.vx, v.vy, v.vz) / 30), target };
 }
 
 export type ShotStyle = 'normal' | 'finesse' | 'chip';
@@ -151,6 +151,14 @@ export function updatePendingKick(s: MatchState, dt: number): void {
   s.owner = null;
   p.holdingBall = false;
   if (s.ball.pos.y < BALL.radius + 0.01) s.ball.pos.y = BALL.radius + 0.01;
+  if (k.target) {
+    // The ball moved toward the foot during the wind-up: keep the pass aimed at its target
+    const h = Math.hypot(k.vel.vx, k.vel.vz);
+    const dx = k.target.x - s.ball.pos.x;
+    const dz = k.target.z - s.ball.pos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    k.vel = { ...k.vel, vx: (dx / d) * h, vz: (dz / d) * h };
+  }
   s.ball.kick(k.vel.vx, k.vel.vy, k.vel.vz, k.vel.spin);
   p.lockout = KICK.touchLockout;
   s.lastTouch = p.team;
