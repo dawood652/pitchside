@@ -338,6 +338,11 @@ startLoop(
     if (frozen) return;
     input.poll();
     if (input.pressed('pause')) togglePause();
+    // Controller in menus: Cross presses the main button (Play / Resume / Play again)
+    if (input.pressed('pass') && (!game.s.humanActive || paused || game.s.phase === 'fulltime')) {
+      const b = document.querySelector<HTMLButtonElement>('#go, #resume, #again');
+      if (b && b.offsetParent !== null) b.click();
+    }
     snapshot(prev);
     if (!paused && !replay.active && !settingsOpen) {
       game.update(dt, input);
