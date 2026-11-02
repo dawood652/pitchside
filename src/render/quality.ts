@@ -22,9 +22,9 @@ export class Quality {
     return this.w.maxDpr;
   }
 
-  /** Post-processing (AO, bloom) only on desktop "auto"/"quality", or a phone set to "quality". */
+  /** Post-processing (AO, bloom) only when Graphics is set to "Quality": it misbehaves on some Safari/GPU combos. */
   usePost(): boolean {
-    return this.mode === 'quality' || (this.mode === 'auto' && !this.w.mobile);
+    return this.mode === 'quality';
   }
 
   setMode(m: GraphicsMode): void {
