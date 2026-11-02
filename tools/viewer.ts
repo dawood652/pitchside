@@ -1,0 +1,35 @@
+// Dev-only: shows players frozen at chosen times of chosen clips (side view), for checking retargets.
+import * as THREE from 'three';
+import { loadPlayerAsset, createPlayerModel } from '../src/render/playerModel';
+const q = new URLSearchParams(location.search);
+const clip = q.get('clip') ?? 'mc_pass';
+const times = (q.get('t') ?? '0,0.3,0.5,0.65,0.8,1.0').split(',').map(Number);
+const view = q.get('view') ?? 'side';
+const r = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+r.setSize(1400, 420);
+document.body.appendChild(r.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xcfd8cf);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x445544, 2.2));
+const sun = new THREE.DirectionalLight(0xffffff, 2);
+sun.position.set(3, 6, 4);
+scene.add(sun);
+const grid = new THREE.GridHelper(40, 40, 0x557755, 0x88aa88);
+scene.add(grid);
+const asset = await loadPlayerAsset();
+const kit = { primary: '#c8102e', secondary: '#ffffff', shorts: '#ffffff', socks: '#c8102e', boots: '#111111', skin: '#e0ac69', hair: '#1b1b1b', pattern: 'plain', numberColor: '#ffffff', number: 9, name: 'TEST', keeper: false, hairStyle: 0 };
+times.forEach((t, i) => {
+  const m = createPlayerModel(asset, kit as never);
+  const mixer = new THREE.AnimationMixer(m.model);
+  const a = mixer.clipAction(asset.clips.get(clip)!);
+  a.play();
+  mixer.setTime(t);
+  m.root.position.x = (i - (times.length - 1) / 2) * 2.2;
+  if (view === 'side') m.root.rotation.y = Math.PI / 2;
+  scene.add(m.root);
+});
+const cam = new THREE.PerspectiveCamera(30, 1400 / 420, 0.1, 100);
+cam.position.set(0, 1.1, 11);
+cam.lookAt(0, 0.9, 0);
+r.render(scene, cam);
+(window as unknown as { done: boolean }).done = true;

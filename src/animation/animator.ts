@@ -60,12 +60,28 @@ export class PlayerAnimator {
     return this.m.bones.get(n);
   }
 
-  /** Pick the clip one-shot (if any) for the player's state. Returns [name, startFraction, timeScale, loop]. */
+  /**
+   * Pick the clip one-shot (if any) for the player's state. Returns [name, startFraction, timeScale, loop].
+   * mc_* clips are football mocap (see tools/mocap-clips.mjs). Kicks start so the foot meets the ball
+   * exactly when the simulation releases it: start = (key - contactDelay * timeScale) / duration.
+   */
   private wantedClip(p: Player, ctx: AnimContext): [string, number, number, boolean] | null {
-    const u = p.actionDur > 0 ? p.actionT / p.actionDur : 0;
+    const foot = (right: string, left: string) => (p.leftFooted ? left : right);
     switch (p.action) {
+      case 'pass':
+        return [foot('mc_pass', 'mc_pass_M'), 0.263, 1.5, false];
+      case 'lob':
+        return [foot('mc_pass', 'mc_pass_M'), 0.24, 1.4, false];
+      case 'shot':
+        return [foot('mc_shot_M', 'mc_shot'), 0.26, 1.3, false];
+      case 'throwin':
+        return ['mc_throwin', 0.36, 1.2, false];
       case 'tackle':
+        if (!p.slide) return [p.id % 2 ? 'mc_tackle' : 'mc_tackle_M', 0.1, 1.15, false];
         return p.actionT < 0.66 ? ['Slide_Start', 0, 1.15, false] : ['Slide_Exit', 0, 1.1, false];
+      case 'catch':
+        // high ball: jump-and-catch; low ball: crouch and gather
+        return ctx.ball.y > 1.3 ? ['mc_save1', 0.1, 1.25, false] : ['mc_save3', 0.3, 1.3, false];
       case 'header':
         return ['Jump_Start', 0.38, 1.25, false];
       case 'gkthrow':
@@ -75,13 +91,13 @@ export class PlayerAnimator {
         return ['Hit_Chest', 0, 0.9, false];
       case 'celebrate': {
         const v = p.celebrateVariant;
-        if (v === 0) return p.speed < 1.2 ? ['Celebration', 0, 1, true] : null;
-        if (v === 1) return p.actionT < 1.2 ? ['JogToFlip', 0, 1, false] : ['Celebration', 0, 1, true];
-        if (v === 2) return p.speed < 1.2 ? ['Yes', 0, 1, true] : null;
+        if (v === 0) return p.speed < 1.2 ? ['mc_cele1', 0, 1, false] : null;
+        if (v === 1) return p.actionT < 1.2 ? ['JogToFlip', 0, 1, false] : ['mc_cele3', 0, 1, false];
+        if (v === 2) return p.speed < 1.2 ? ['mc_cele2', 0, 1, false] : null;
         return p.actionT < 1.9 ? ['BackFlip', 0, 1, false] : ['Dance_Loop', 0, 1, true];
       }
       default:
-        void u;
+        break;
     }
     if (ctx.outcome && p.speed < 0.5) {
       if (ctx.outcome === 'win') return ['Celebration', 0, 1, true];
@@ -94,16 +110,8 @@ export class PlayerAnimator {
   private wantedProc(p: Player, holdingOverhead: boolean): Pose | null {
     const u = p.actionDur > 0 ? Math.min(1, p.actionT / p.actionDur) : 0;
     switch (p.action) {
-      case 'pass':
-      case 'shot':
-      case 'lob':
-        return clips.kick(u, p.action === 'shot' ? p.actionPower : p.actionPower * 0.6, p.action === 'lob');
       case 'dive':
         return clips.dive(u, p.diveDir, p.diveHigh);
-      case 'catch':
-        return clips.catchPose(u);
-      case 'throwin':
-        return clips.throwBall(u);
       case 'celebrate':
         if (p.celebrateVariant === 0 && p.speed >= 1.2) {
           const c = clips.celebrate(0, 0, 0);

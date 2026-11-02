@@ -36,6 +36,10 @@ export class Player {
   diveDir = 0;
   diveHigh = 0;
   celebrateVariant = 0;
+  /** Slide tackle (true) or standing tackle (false) for the current tackle action. */
+  slide = false;
+  /** Stronger foot for passes and shots (about one player in five is left-footed). */
+  leftFooted = false;
   lockout = 0; // can't touch ball until 0
   tackleCooldown = 0;
   stun = 0;
@@ -62,6 +66,7 @@ export class Player {
       defending: r(role === 'DEF' ? 6 : role === 'FWD' ? -20 : -4),
       keeping: role === 'GK' ? r(2) : 30,
     };
+    this.leftFooted = (seed * 7 + id * 13) % 5 === 0;
   }
 
   get speed(): number {

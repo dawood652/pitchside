@@ -120,12 +120,15 @@ export function throwTo(s: MatchState, p: Player, target: V2, keeper: boolean): 
 }
 
 /** Start a sliding/standing tackle attempt. Resolution happens in control.ts. */
-export function tackle(p: Player): void {
+/** Standing tackle (a poke with the foot) or slide tackle (longer reach, longer recovery). */
+export function tackle(p: Player, slide = true): void {
   if (p.busy || p.tackleCooldown > 0 || p.stun > 0) return;
-  p.startAction('tackle', 0.95);
-  p.tackleCooldown = 1.1;
+  p.slide = slide;
+  p.startAction('tackle', slide ? 0.95 : 0.7);
+  p.tackleCooldown = slide ? 1.1 : 0.8;
   const f = p.forward;
-  p.vel = { x: f.x * 7.5, z: f.z * 7.5 };
+  const v = slide ? 7.5 : 4.5;
+  p.vel = { x: f.x * v, z: f.z * v };
 }
 
 export function nearestOpponentDist(s: MatchState, p: Player): number {

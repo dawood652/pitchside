@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
+globalThis.self = globalThis;
+const f = process.argv[2];
+const buf = fs.readFileSync(f);
+const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+const obj = new FBXLoader().parse(ab, '');
+const bones = [];
+obj.traverse((o) => { if (o.isBone) bones.push(o.name); });
+let meshes = 0; obj.traverse((o) => { if (o.isMesh) meshes++; });
+console.log('bones', bones.length, bones.slice(0, 70).join(','));
+console.log('meshes', meshes, 'scale', obj.scale.toArray());
+for (const c of obj.animations) console.log('clip', c.name, c.duration.toFixed(2), 'tracks', c.tracks.length, c.tracks.slice(0, 4).map((t) => t.name).join(' | '));

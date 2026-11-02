@@ -182,9 +182,10 @@ export function updateHuman(s: MatchState, input: Input, dt: number): void {
   // Tackle: PASS when close (holding it from further away = contain), SHOOT lunges from a bit further
   if (opp) {
     const d = Math.hypot(opp.pos.x - p.pos.x, opp.pos.z - p.pos.z);
-    if ((input.pressed('pass') && d < 2.6) || (input.pressed('shoot') && d < 3.2)) {
+    const stand = input.pressed('pass') && d < 2.6;
+    if (stand || (input.pressed('shoot') && d < 3.2)) {
       p.faceTowards(s.ball.pos.x, s.ball.pos.z);
-      tackle(p);
+      tackle(p, !stand);
     }
   }
 }

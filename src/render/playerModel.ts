@@ -35,11 +35,15 @@ let asset: PlayerAsset | null = null;
 export async function loadPlayerAsset(): Promise<PlayerAsset> {
   if (asset) return asset;
   const loader = new GLTFLoader();
-  const b64 = playerData.slice(playerData.indexOf(',') + 1);
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  const gltf = await loader.parseAsync(bytes.buffer, '');
+  let data: ArrayBuffer;
+  if (playerData.startsWith('data:')) {
+    // Production: inlined base64 (the published page blocks fetch, even of data: URLs)
+    const bin = atob(playerData.slice(playerData.indexOf(',') + 1));
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    data = bytes.buffer;
+  } else data = await (await fetch(playerData)).arrayBuffer(); // dev server serves a URL
+  const gltf = await loader.parseAsync(data, '');
   const clips = new Map(gltf.animations.map((a) => [a.name, a]));
   const mapping = new Map<string, { scale: THREE.Vector3; offset: THREE.Vector3 }>();
   gltf.scene.updateMatrixWorld(true);
