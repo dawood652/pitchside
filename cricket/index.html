@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="theme-color" content="#0d1b12" />
+<title>Stumps</title>
+<style>
+  :root { --ink: #f6f3ea; --gold: #ffd166; --red: #ef4444; }
+  html, body { margin: 0; height: 100%; background: #0d1b12; color: var(--ink); font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; overflow: hidden; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; touch-action: none; overscroll-behavior: none; }
+  canvas { display: block; touch-action: none; }
+  #ui { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(5,15,8,.55), rgba(5,15,8,.85)); padding: 16px; }
+  #ui[hidden] { display: none; }
+  .card { width: min(520px, 100%); text-align: center; }
+  h1 { font-size: clamp(44px, 10vw, 84px); letter-spacing: .06em; margin: 0; font-weight: 900; font-style: italic; color: var(--gold); text-shadow: 0 4px 0 #7a4b00; }
+  .sub { opacity: .85; margin: 6px 0 16px; }
+  .row { display: flex; gap: 8px; justify-content: center; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+  .row b { font-size: 22px; min-width: 200px; }
+  .row.small { opacity: .8; margin-top: -4px; }
+  button { font: 600 15px system-ui, sans-serif; color: var(--ink); background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.22); border-radius: 10px; padding: 9px 14px; cursor: pointer; touch-action: manipulation; }
+  button.on { background: var(--ink); color: #111; }
+  .go { display: block; width: 100%; margin: 16px 0 8px; padding: 16px; font-size: 22px; font-weight: 900; background: var(--gold); color: #111; border: 0; letter-spacing: .08em; }
+  .help { font-size: 13px; opacity: .75; line-height: 1.5; }
+  .big { font-size: 28px; font-weight: 800; }
+  #hud { position: fixed; top: max(10px, env(safe-area-inset-top)); left: max(12px, env(safe-area-inset-left)); right: max(12px, env(safe-area-inset-right)); pointer-events: none; }
+  .score { display: inline-flex; align-items: center; gap: 12px; background: rgba(8,14,10,.82); border-radius: 10px; padding: 6px 12px 6px 6px; font-size: 18px; }
+  .score b { font-size: 24px; }
+  .score .tm { padding: 4px 8px; border-radius: 6px; font-weight: 800; font-size: 13px; letter-spacing: .06em; }
+  .score .need { color: var(--gold); font-weight: 700; }
+  .chips { margin-top: 6px; display: flex; gap: 4px; }
+  .chips i { font-style: normal; width: 24px; height: 24px; display: grid; place-items: center; background: rgba(8,14,10,.8); border-radius: 50%; font-size: 12px; font-weight: 700; }
+  .chips i.w { background: var(--red); }
+  .chips i.b { background: #2563eb; }
+  .timing { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%); font-weight: 800; font-size: 20px; letter-spacing: .08em; text-shadow: 0 2px 6px #000; }
+  #banner { position: fixed; left: 0; right: 0; top: 30%; text-align: center; font-size: clamp(40px, 9vw, 90px); font-weight: 900; font-style: italic; letter-spacing: .04em; pointer-events: none; text-shadow: 0 5px 0 rgba(0,0,0,.45); }
+  #banner.big { color: var(--gold); }
+  #banner.out { color: var(--red); }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="banner"></div>
+<div id="ui"></div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
