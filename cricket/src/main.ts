@@ -1,7 +1,6 @@
 // Stumps: a Stick Cricket-style chase. Game loop, ball-by-ball state machine and HUD.
 import { BallFlight, defaultField, Delivery, deliveryPos, flightTime, flyBall, Innings, makeDelivery, newInnings, Outcome, PITCH_LEN, record, resolveShot, rng, status } from './engine';
-import { camFor, drawBall, drawBatter, drawBowler, drawGround, drawStumps } from './view';
-import { drawField } from './fieldView';
+import { Match3D } from './render/match3d';
 import { Input, SwingCmd } from './input';
 import { audioStart, sfx } from './audio';
 
@@ -15,26 +14,14 @@ const TEAMS = [
 ];
 const SWING_LEAD = 0.17; // seconds from pressing to bat meeting ball
 
-const canvas = document.getElementById('c') as HTMLCanvasElement;
-const g = canvas.getContext('2d')!;
+const app = document.getElementById('app')!;
 const ui = document.getElementById('ui')!;
 const hud = document.getElementById('hud')!;
 const banner = document.getElementById('banner')!;
-const input = new Input(canvas);
-let W = 0, H = 0;
-function resize(): void {
-  const dpr = Math.min(devicePixelRatio || 1, 2);
-  W = innerWidth;
-  H = innerHeight;
-  canvas.width = W * dpr;
-  canvas.height = H * dpr;
-  canvas.style.width = W + 'px';
-  canvas.style.height = H + 'px';
-  g.setTransform(dpr, 0, 0, dpr, 0, 0);
-}
-addEventListener('resize', resize);
-resize();
-
+const input = new Input(app);
+const mobile = matchMedia('(pointer: coarse)').matches;
+const scene3d = new Match3D(app, mobile);
+const secondary = (hex: string) => (parseInt(hex.slice(1), 16) > 0x888888 ? '#111111' : '#ffffff');
 type Phase = 'menu' | 'runup' | 'ball' | 'field' | 'result' | 'over';
 const S = {
   phase: 'menu' as Phase,
@@ -88,6 +75,7 @@ function pickTeam(d: number): void {
 
 function start(): void {
   audioStart();
+  scene3d.setTeams([TEAMS[S.team].kit, secondary(TEAMS[S.team].kit)], [TEAMS[S.opp].kit, secondary(TEAMS[S.opp].kit)]);
   const target = Math.round(S.overs * 6 * (1.35 + S.diff * 0.2 + S.r() * 0.3)) + 1;
   S.inn = newInnings(S.overs, S.overs === 5 ? 5 : S.overs === 2 ? 3 : 2, target);
   S.last = [];
@@ -168,14 +156,11 @@ function hudText(): void {
 
 let prev = performance.now();
 function frame(now: number): void {
-  const dt = Math.min(0.05, (now - prev) / 1000);
+  const dt = Math.min(0.1, (now - prev) / 1000); // keep game time close to real time so timing feels right
   prev = now;
   input.poll();
   S.t += dt;
   S.cheer = Math.max(0, S.cheer - dt * 0.4);
-  const cam = camFor(W, H);
-  const kitBat = TEAMS[S.team].kit;
-  const kitBowl = TEAMS[S.opp].kit;
   if (S.phase === 'menu' || S.phase === 'over') {
     if (input.menuPress) (ui.querySelector('#go, #again') as HTMLButtonElement | null)?.click();
     input.clear();
@@ -224,29 +209,24 @@ function frame(now: number): void {
   }
 
   // ---- draw
-  if (S.phase === 'field' && S.flight) {
-    drawField(g, W, H, S.flight, field, S.t, kitBowl);
-  } else {
-    drawGround(g, cam, now / 1000, S.cheer);
-    drawStumps(g, cam, PITCH_LEN);
-    // bowler
-    const runZ = S.phase === 'runup' ? PITCH_LEN + 9 * Math.max(0, 1 - S.t / 1.35) + 0.4 : PITCH_LEN + 0.4 - Math.min(1.5, S.t * 3);
-    const arm = S.phase === 'runup' ? Math.max(0, (S.t - 1.05) / 0.3) : 1 + Math.min(0.4, S.t);
-    drawBowler(g, cam, runZ, S.phase === 'runup' ? S.t * 2.2 : 0.25, arm, kitBowl);
-    drawStumps(g, cam, 0, S.broken ? Math.min(1, S.t * 4 + 0.3) : 0);
-    // ball (behind the batter before he plays it, then in front)
-    let ball: { x: number; y: number; z: number } | null = null;
-    if (S.phase === 'ball' && S.d) ball = deliveryPos(S.d, S.t);
-    if (S.phase === 'result' && S.d && S.outcome?.kind !== 'hit') ball = deliveryPos(S.d, flightTime(S.d) + Math.min(0.25, S.t));
-    if (ball) drawBall(g, cam, ball.x, ball.y, ball.z);
-    const swingP = S.swing ? Math.min(1, Math.max(0, ((S.phase === 'ball' ? S.t : 99) - S.swing.at) / 0.42)) : 0;
-    const shotDir = S.swing ? S.swing.dx : 0;
-    drawBatter(g, cam, S.phase === 'result' && S.swing ? 1 : swingP, shotDir, !!S.swing?.loft, !!S.swing?.block, kitBat);
-  }
+  const o = S.outcome;
+  scene3d.update(dt, {
+    phase: S.phase,
+    t: S.t,
+    d: S.d,
+    swing: S.swing,
+    hit: o?.kind === 'hit',
+    wicket: o?.kind === 'miss' && !!o.wicket && o.wicket === 'bowled',
+    flight: S.flight,
+    swingLead: SWING_LEAD,
+  });
   hudText();
   requestAnimationFrame(frame);
 }
 // test hook: state + the ideal moment to press swing for the current delivery
-(window as unknown as { __stumps: unknown }).__stumps = { S, perfectAt: () => (S.d ? flightTime(S.d) - 0.3 / S.d.speed - SWING_LEAD : 0) };
-menu();
-requestAnimationFrame(frame);
+(window as unknown as { __stumps: unknown }).__stumps = { S, scene3d, THREE_V: (x: number, y: number, z: number) => ({ x, y, z }), perfectAt: () => (S.d ? flightTime(S.d) - 0.3 / S.d.speed - SWING_LEAD : 0) };
+ui.innerHTML = '<div class="card"><h1>STUMPS</h1><p class="sub">Loading players…</p></div>';
+scene3d.load([TEAMS[0].kit, '#ffffff'], [TEAMS[1].kit, '#ffffff']).then(() => {
+  menu();
+  requestAnimationFrame(frame);
+});
