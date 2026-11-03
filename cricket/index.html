@@ -14,6 +14,16 @@
   #app { position: fixed; inset: 0; touch-action: none; } #app canvas { display: block; }
   #ui { position: fixed; inset: 0; display: grid; place-items: center; background: radial-gradient(ellipse at center, rgba(5,15,8,.55), rgba(5,15,8,.85)); padding: 16px; }
   #ui[hidden] { display: none; }
+  #ui { overflow-y: auto; }
+  @media (max-height: 520px) {
+    #ui { place-items: start center; padding-top: 8px; }
+    h1 { font-size: 40px; }
+    .sub { margin: 2px 0 6px; }
+    .row { margin: 5px 0; }
+    .row b { font-size: 18px; }
+    .go { margin: 8px 0 4px; padding: 10px; font-size: 18px; }
+    .help { font-size: 11px; margin: 4px 0; }
+  }
   .card { width: min(520px, 100%); text-align: center; }
   h1 { font-size: clamp(44px, 10vw, 84px); letter-spacing: .06em; margin: 0; font-weight: 900; font-style: italic; color: var(--gold); text-shadow: 0 4px 0 #7a4b00; }
   .sub { opacity: .85; margin: 6px 0 16px; }
@@ -35,6 +45,7 @@
   .chips i.w { background: var(--red); }
   .chips i.b { background: #2563eb; }
   .timing { position: fixed; left: 50%; bottom: 18%; transform: translateX(-50%); font-weight: 800; font-size: 20px; letter-spacing: .08em; text-shadow: 0 2px 6px #000; }
+  #music { position: fixed; top: max(10px, env(safe-area-inset-top)); right: max(12px, env(safe-area-inset-right)); z-index: 5; background: rgba(8,14,10,.8); }
   #banner { position: fixed; left: 0; right: 0; top: 30%; text-align: center; font-size: clamp(40px, 9vw, 90px); font-weight: 900; font-style: italic; letter-spacing: .04em; pointer-events: none; text-shadow: 0 5px 0 rgba(0,0,0,.45); }
   #banner.big { color: var(--gold); }
   #banner.out { color: var(--red); }
@@ -44,6 +55,7 @@
 <div id="app"></div>
 <div id="hud"></div>
 <div id="banner"></div>
+<button id="music" aria-label="Music">♪ On</button>
 <div id="ui"></div>
 <script type="module" src="/src/main.ts"></script>
 </body>

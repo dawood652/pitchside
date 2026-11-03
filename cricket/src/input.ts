@@ -6,13 +6,15 @@ export interface SwingCmd {
   dy: number; // -1..1, up = straight
   loft: boolean;
   block: boolean;
+  /** Screen point that was touched/clicked (tap-to-hit), in CSS pixels. */
+  sx?: number;
+  sy?: number;
 }
 
 export class Input {
   private keys = new Set<string>();
   private padPrev: boolean[] = [];
   private queued: SwingCmd | null = null;
-  private touch: { x: number; y: number; t: number; n: number } | null = null;
   menuPress = false; // Cross/Enter/Space on menus
   pausePress = false;
 
@@ -27,28 +29,13 @@ export class Input {
       if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault();
     });
     addEventListener('keyup', (e) => this.keys.delete(e.code));
-    el.addEventListener('touchstart', (e) => {
-      const t = e.changedTouches[0];
-      this.touch = { x: t.clientX, y: t.clientY, t: performance.now(), n: e.touches.length };
-      e.preventDefault();
-    }, { passive: false });
-    el.addEventListener('touchmove', (e) => {
-      if (this.touch) this.touch.n = Math.max(this.touch.n, e.touches.length);
-      e.preventDefault();
-    }, { passive: false });
-    el.addEventListener('touchend', (e) => {
-      const s = this.touch;
-      this.touch = null;
-      if (!s) return;
-      const t = e.changedTouches[0];
-      const dx = t.clientX - s.x;
-      const dy = s.y - t.clientY;
-      const len = Math.hypot(dx, dy);
+    // Tap / click: the moment is the swing, the point on the field is where the ball goes
+    el.addEventListener('pointerdown', (e) => {
+      this.queued = { dx: 0, dy: 1, loft: true, block: false, sx: e.clientX, sy: e.clientY };
       this.menuPress = true;
-      // tap = straight drive, swipe = shot in that direction, long swipe or two fingers = lofted
-      this.queued = len < 18 ? { dx: 0, dy: 0, loft: s.n > 1, block: false } : { dx: dx / len, dy: dy / len, loft: len > 110 || s.n > 1, block: false };
       e.preventDefault();
-    }, { passive: false });
+    });
+    for (const t of ['touchstart', 'touchmove', 'touchend'] as const) el.addEventListener(t, (e) => e.preventDefault(), { passive: false });
   }
 
   private dirFromKeys(): { dx: number; dy: number } {

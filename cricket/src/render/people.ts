@@ -24,7 +24,7 @@ export class Person {
     this.mixer = new THREE.AnimationMixer(this.m.model);
     for (const [n, c] of asset.clips) this.acts.set(n, this.mixer.clipAction(c));
     // bone-local direction toward each bone's child (for aiming limbs)
-    for (const [n, child] of [['upperarm_l', 'lowerarm_l'], ['lowerarm_l', 'hand_l'], ['upperarm_r', 'lowerarm_r'], ['lowerarm_r', 'hand_r']] as const)
+    for (const [n, child] of [['upperarm_l', 'lowerarm_l'], ['lowerarm_l', 'hand_l'], ['upperarm_r', 'lowerarm_r'], ['lowerarm_r', 'hand_r'], ['thigh_l', 'calf_l'], ['calf_l', 'foot_l'], ['thigh_r', 'calf_r'], ['calf_r', 'foot_r']] as const)
       this.childDir.set(n, this.m.bones.get(child)!.position.clone().normalize());
     this.m.root.updateMatrixWorld(true);
     const head = this.m.bones.get('Head')!;
@@ -88,6 +88,32 @@ export class Person {
     this.aim(`upperarm_${side}`, elbow.clone().sub(s));
     const e2 = la.getWorldPosition(new THREE.Vector3());
     this.aim(`lowerarm_${side}`, s.clone().addScaledVector(dir, d).sub(e2));
+  }
+
+  /** Two-bone leg IK: ankle to `target`, knee bending toward `pole` (world direction). */
+  step(side: 'l' | 'r', target: THREE.Vector3, pole: THREE.Vector3): void {
+    const th = this.m.bones.get(`thigh_${side}`)!;
+    const ca = this.m.bones.get(`calf_${side}`)!;
+    const ft = this.m.bones.get(`foot_${side}`)!;
+    const hip = th.getWorldPosition(new THREE.Vector3());
+    const knee = ca.getWorldPosition(new THREE.Vector3());
+    const ankle = ft.getWorldPosition(new THREE.Vector3());
+    const a = hip.distanceTo(knee);
+    const b = knee.distanceTo(ankle);
+    const toT = target.clone().sub(hip);
+    const d = Math.min(a + b - 0.003, Math.max(0.1, toT.length()));
+    const dir = toT.normalize();
+    const x = (a * a - b * b + d * d) / (2 * d);
+    const h = Math.sqrt(Math.max(0, a * a - x * x));
+    const perp = pole.clone().sub(dir.clone().multiplyScalar(pole.dot(dir))).normalize();
+    const k = hip.clone().addScaledVector(dir, x).addScaledVector(perp, h);
+    this.aim(`thigh_${side}`, k.clone().sub(hip));
+    const k2 = ca.getWorldPosition(new THREE.Vector3());
+    this.aim(`calf_${side}`, hip.clone().addScaledVector(dir, d).sub(k2));
+  }
+
+  footPos(side: 'l' | 'r'): THREE.Vector3 {
+    return this.m.bones.get(`foot_${side}`)!.getWorldPosition(new THREE.Vector3());
   }
 
   /** Turn the head toward a world point (limited). */

@@ -1,0 +1,38 @@
+[
+  {
+    "text": "YOUR BRAND HERE",
+    "sub": "Advertise on this board",
+    "bg": "#0b3d91",
+    "fg": "#ffffff"
+  },
+  {
+    "text": "GOLDEN WILLOW",
+    "sub": "Bats for big hitters",
+    "bg": "#c1121f",
+    "fg": "#ffffff"
+  },
+  {
+    "text": "SPIN COLA",
+    "sub": "Turn it up",
+    "bg": "#2b9348",
+    "fg": "#ffffff"
+  },
+  {
+    "text": "NORTH STAR AIR",
+    "sub": "Fly further",
+    "bg": "#f77f00",
+    "fg": "#111111"
+  },
+  {
+    "text": "BOUNDARY FM",
+    "sub": "24/7 cricket radio",
+    "bg": "#6a00f4",
+    "fg": "#ffffff"
+  },
+  {
+    "text": "AD SPACE AVAILABLE",
+    "sub": "Your logo · your link",
+    "bg": "#111111",
+    "fg": "#ffd166"
+  }
+]

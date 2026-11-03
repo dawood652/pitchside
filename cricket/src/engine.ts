@@ -232,3 +232,156 @@ export function status(inn: Innings): 'playing' | 'won' | 'lost' | 'tied' {
   if (inn.wickets >= inn.maxWickets || inn.balls >= inn.maxBalls) return inn.runs === inn.target - 1 ? 'tied' : 'lost';
   return 'playing';
 }
+
+// ---------------------------------------------------------------------------------------------
+// Tap-to-hit model: the tap picks WHERE (a point on the field), the moment picks HOW WELL.
+// perfect -> six toward the point · good -> four along the ground · ok -> 1-2 runs to the point ·
+// poor -> a skier toward the nearest fielder (caught or dropped) · way off -> beaten / bowled.
+
+export type ShotKind = 'six' | 'four' | 'runs' | 'catch' | 'drop' | 'edge' | 'miss';
+export interface PlannedShot {
+  kind: ShotKind;
+  runs: number;
+  out: boolean;
+  wicket: 'bowled' | 'lbw' | 'caught' | 'caught behind' | null;
+  path: { t: number; x: number; z: number; h: number }[]; // field coords from the contact point
+  fielder: number | null; // fielder who catches / collects
+  endT: number;
+  timingBand: 'perfect' | 'good' | 'ok' | 'poor' | 'miss';
+}
+
+/** Timing bands (seconds) by difficulty 0..2. */
+export function bands(difficulty: number): { perfect: number; good: number; ok: number; poor: number } {
+  const k = [1.35, 1, 0.75][difficulty] ?? 1;
+  return { perfect: 0.045 * k, good: 0.09 * k, ok: 0.14 * k, poor: 0.2 * k };
+}
+
+export function bandOf(e: number, difficulty: number): PlannedShot['timingBand'] {
+  const b = bands(difficulty);
+  const a = Math.abs(e);
+  return a <= b.perfect ? 'perfect' : a <= b.good ? 'good' : a <= b.ok ? 'ok' : a <= b.poor ? 'poor' : 'miss';
+}
+
+/** Projectile (with mild drag) from h0 to land at distance `dist` along angle `ang`. */
+function aerial(ang: number, dist: number, peak: number, h0 = 0.8): PlannedShot['path'] {
+  const path: PlannedShot['path'] = [];
+  const g = 9.81;
+  const vy = Math.sqrt(2 * g * Math.max(1, peak - h0));
+  const tUp = vy / g;
+  const tDown = Math.sqrt((2 * peak) / g);
+  const T = tUp + tDown;
+  const dx = Math.sin(ang);
+  const dz = Math.cos(ang);
+  for (let t = 0; t <= T + 1e-6; t += 1 / 30) {
+    const u = t / T;
+    const d = dist * (u * (1.15 - 0.15 * u)); // a touch of drag
+    const h = Math.max(0, h0 + vy * t - 0.5 * g * t * t);
+    path.push({ t, x: dx * d, z: dz * d, h });
+  }
+  return path;
+}
+
+/** Ground shot rolling out to `dist` (decelerating), optionally past the rope. */
+function grounder(ang: number, dist: number, v0: number): PlannedShot['path'] {
+  const path: PlannedShot['path'] = [];
+  const a = (v0 * v0) / (2 * dist); // constant deceleration that stops at dist
+  const T = v0 / a;
+  const dx = Math.sin(ang);
+  const dz = Math.cos(ang);
+  for (let t = 0; t <= T + 1e-6; t += 1 / 30) {
+    const d = v0 * t - 0.5 * a * t * t;
+    const bounce = t < 0.35 ? Math.abs(Math.sin(t * 9)) * 0.5 * (1 - t / 0.35) : 0;
+    path.push({ t, x: dx * d, z: dz * d, h: bounce });
+  }
+  return path;
+}
+
+export function planShot(d: Delivery, timing: number | null, target: { x: number; z: number } | null, difficulty: number, fielders: Fielder[], r: () => number): PlannedShot {
+  const onStumps = Math.abs(d.line) < 0.13 && d.arriveH < 0.75;
+  const none = (kind: ShotKind, wicket: PlannedShot['wicket'], band: PlannedShot['timingBand']): PlannedShot => ({ kind, runs: 0, out: !!wicket, wicket, path: [], fielder: null, endT: 0, timingBand: band });
+  if (timing === null || !target) return none('miss', onStumps ? (d.arriveH < 0.4 || r() < 0.5 ? 'bowled' : 'lbw') : null, 'miss');
+  const band = bandOf(timing, difficulty);
+  if (band === 'miss') return none('miss', onStumps ? 'bowled' : null, 'miss');
+  // early pulls the shot to the leg side, late pushes it to the off side (field x: + = off side)
+  const want = Math.atan2(target.x, target.z);
+  const err = timing * (band === 'perfect' ? 0.8 : 2.2);
+  const ang = want + err;
+  const dist = Math.hypot(target.x, target.z);
+  if (band === 'perfect') {
+    const path = aerial(ang, BOUNDARY + 12 + r() * 18, 18 + r() * 10);
+    return { kind: 'six', runs: 6, out: false, wicket: null, path, fielder: null, endT: path.at(-1)!.t, timingBand: band };
+  }
+  if (band === 'good') {
+    const path = grounder(ang, BOUNDARY + 6, 30 + r() * 6);
+    return { kind: 'four', runs: 4, out: false, wicket: null, path, fielder: null, endT: Math.min(path.at(-1)!.t, 3.2), timingBand: band };
+  }
+  if (band === 'ok') {
+    const to = Math.max(14, Math.min(48, dist));
+    const path = grounder(ang, to, 16 + to * 0.25);
+    const runs = to > 32 ? 2 : 1;
+    let fi = 0;
+    let best = 1e9;
+    const end = path.at(-1)!;
+    fielders.forEach((f, i) => {
+      const dd = Math.hypot(f.x - end.x, f.z - end.z);
+      if (dd < best) {
+        best = dd;
+        fi = i;
+      }
+    });
+    return { kind: 'runs', runs, out: false, wicket: null, path, fielder: fi, endT: path.at(-1)!.t + 0.6, timingBand: band };
+  }
+  // poor: a thick edge behind, or a skier toward the fielder nearest the aimed line
+  if (r() < 0.3) {
+    const caught = r() < 0.55;
+    const path = aerial(Math.PI + (r() - 0.5) * 0.8, caught ? 4 : 28, caught ? 1.6 : 3, 0.7);
+    return { kind: caught ? 'catch' : 'edge', runs: caught ? 0 : 1, out: caught, wicket: caught ? 'caught behind' : null, path: caught ? path.slice(0, 8) : path, fielder: null, endT: caught ? 0.3 : path.at(-1)!.t, timingBand: band };
+  }
+  let fi = 0;
+  let best = 1e9;
+  fielders.forEach((f, i) => {
+    const fa = Math.atan2(f.x, f.z);
+    let da = Math.abs(fa - ang) % (Math.PI * 2);
+    if (da > Math.PI) da = Math.PI * 2 - da;
+    const cost = da * 40 + Math.hypot(f.x, f.z) * 0.1;
+    if (cost < best) {
+      best = cost;
+      fi = i;
+    }
+  });
+  const f = fielders[fi];
+  const fd = Math.hypot(f.x, f.z);
+  const miss = (r() - 0.3) * 9; // landing a few metres from him
+  const land = { x: f.x + Math.sin(ang) * miss, z: f.z + Math.cos(ang) * miss };
+  const path = aerial(Math.atan2(land.x, land.z), Math.hypot(land.x, land.z), 14 + fd * 0.25);
+  const flight = path.at(-1)!.t;
+  const runDist = Math.max(0, Math.abs(miss) - 1.5);
+  const canReach = runDist <= 6.5 * (flight - 0.4);
+  const caught = canReach && r() < 0.82;
+  return {
+    kind: caught ? 'catch' : 'drop',
+    runs: caught ? 0 : 1,
+    out: caught,
+    wicket: caught ? 'caught' : null,
+    path,
+    fielder: fi,
+    endT: flight,
+    timingBand: band,
+  };
+}
+
+/** Nine fielders: five on the rope, four in the ring (keeper and bowler are separate). */
+export function ropeField(): Fielder[] {
+  const p = (name: string, deg: number, d: number): Fielder => ({ name, x: Math.sin((deg * Math.PI) / 180) * d, z: Math.cos((deg * Math.PI) / 180) * d });
+  return [
+    p('Long-off', 22, BOUNDARY - 3),
+    p('Long-on', -22, BOUNDARY - 3),
+    p('Deep cover', 70, BOUNDARY - 3),
+    p('Deep midwicket', -70, BOUNDARY - 3),
+    p('Fine leg', -150, BOUNDARY - 4),
+    p('Point', 100, 24),
+    p('Cover', 45, 26),
+    p('Midwicket', -45, 26),
+    p('Square leg', -100, 24),
+  ];
+}

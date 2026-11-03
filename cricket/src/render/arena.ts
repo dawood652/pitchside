@@ -4,6 +4,7 @@
 // the off side shows on the right of the screen behind a right-handed batter.
 import * as THREE from 'three';
 import { BOUNDARY, PITCH_LEN } from '../engine';
+import { Ad, drawAd } from '../ads';
 
 export const W = (x: number, y: number, z: number) => new THREE.Vector3(-x, y, z);
 
@@ -15,6 +16,8 @@ export interface Arena {
   stumps: { near: Stumps; far: Stumps };
   crowd: THREE.Mesh;
   resize(): void;
+  setAds(ads: Ad[]): void;
+  update(dt: number): void;
 }
 
 export interface Stumps {
@@ -238,24 +241,6 @@ export function createArena(container: HTMLElement, mobile: boolean): Arena {
   const roof = new THREE.Mesh(new THREE.CylinderGeometry(standR + 30, standR + 26, 4, 96, 1, true), new THREE.MeshStandardMaterial({ color: 0xdfe6ee, side: THREE.DoubleSide, roughness: 0.6 }));
   roof.position.set(0, 24, 0);
   scene.add(roof);
-  // ad boards inside the rope
-  const adTex = canvasTex(2048, 64, (g) => {
-    const ads = ['STUMPS', 'GOLDEN WILLOW', 'SPIN COLA', 'NORTH STAR AIR', 'BOUNDARY FM', 'SEAM & SWING'];
-    const cols = ['#0b3d91', '#c1121f', '#2b9348', '#f77f00', '#6a00f4', '#111'];
-    for (let i = 0; i < 12; i++) {
-      g.fillStyle = cols[i % cols.length];
-      g.fillRect((i * 2048) / 12, 0, 2048 / 12, 64);
-      g.fillStyle = '#fff';
-      g.font = 'bold 34px system-ui, sans-serif';
-      g.textAlign = 'center';
-      g.fillText(ads[i % ads.length], (i + 0.5) * (2048 / 12), 44);
-    }
-  });
-  adTex.wrapS = THREE.RepeatWrapping;
-  adTex.repeat.set(-4, 1); // seen from inside the ring: flip so the text reads correctly
-  const boards = new THREE.Mesh(new THREE.CylinderGeometry(BOUNDARY + 3, BOUNDARY + 3, 0.9, 128, 1, true), new THREE.MeshBasicMaterial({ map: adTex, side: THREE.BackSide }));
-  boards.position.set(0, 0.45, 0);
-  scene.add(boards);
   for (const z of [BOUNDARY + 8, -BOUNDARY - 8]) {
     const s = new THREE.Mesh(new THREE.BoxGeometry(16, 7, 0.4), new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.8 }));
     s.position.set(0, 3.5, z);
@@ -271,5 +256,71 @@ export function createArena(container: HTMLElement, mobile: boolean): Arena {
   };
   addEventListener('resize', resize);
   resize();
-  return { renderer, scene, camera, sun, stumps: { near, far }, crowd: stand, resize };
+  // ---- Advertising: a scrolling LED ring at the rope and big billboards on top of the stands
+  let ledTex: THREE.CanvasTexture | null = null;
+  const adGroup = new THREE.Group();
+  scene.add(adGroup);
+  const setAds = (ads: Ad[]) => {
+    adGroup.clear();
+    const imgs = ads.map((a) => {
+      if (!a.image) return undefined;
+      const im = new Image();
+      im.crossOrigin = 'anonymous';
+      im.src = a.image;
+      return im;
+    });
+    const paintLed = () => {
+      const slots = 12;
+      const c = document.createElement('canvas');
+      c.width = 4096;
+      c.height = 128;
+      const g = c.getContext('2d')!;
+      for (let k = 0; k < slots; k++) drawAd(g, ads[k % ads.length], (k * 4096) / slots, 0, 4096 / slots - 4, 128, imgs[k % ads.length]);
+      return c;
+    };
+    ledTex = new THREE.CanvasTexture(paintLed());
+    ledTex.colorSpace = THREE.SRGBColorSpace;
+    ledTex.wrapS = THREE.RepeatWrapping;
+    ledTex.repeat.set(-3, 1); // seen from inside the ring: flip so text reads correctly
+    const led = new THREE.Mesh(new THREE.CylinderGeometry(BOUNDARY + 3, BOUNDARY + 3, 1.0, 160, 1, true), new THREE.MeshBasicMaterial({ map: ledTex, side: THREE.BackSide }));
+    led.position.y = 0.5;
+    adGroup.add(led);
+    // 8 big billboards around the top of the stands, each one ad, facing the middle
+    for (let k = 0; k < 8; k++) {
+      const ad = ads[k % ads.length];
+      const c = document.createElement('canvas');
+      c.width = 1024;
+      c.height = 256;
+      const g = c.getContext('2d')!;
+      const paint = () => {
+        drawAd(g, ad, 0, 0, 1024, 256, imgs[k % ads.length]);
+        g.strokeStyle = '#ffffff';
+        g.lineWidth = 8;
+        g.strokeRect(4, 4, 1016, 248);
+        tex.needsUpdate = true;
+      };
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      paint();
+      imgs[k % ads.length]?.addEventListener('load', paint);
+      const a = (k / 8) * Math.PI * 2 + Math.PI / 8;
+      const R = standR + 20;
+      const board = new THREE.Mesh(new THREE.PlaneGeometry(24, 6), new THREE.MeshBasicMaterial({ map: tex }));
+      board.position.set(Math.sin(a) * R, 27, Math.cos(a) * R);
+      board.lookAt(0, 20, 0);
+      adGroup.add(board);
+      const post = new THREE.Mesh(new THREE.BoxGeometry(0.6, 6, 0.6), new THREE.MeshStandardMaterial({ color: 0x444b55 }));
+      post.position.set(Math.sin(a) * (R + 0.6), 23, Math.cos(a) * (R + 0.6));
+      adGroup.add(post);
+    }
+    imgs.forEach((im) => im?.addEventListener('load', () => {
+      if (!ledTex) return;
+      ledTex.image = paintLed();
+      ledTex.needsUpdate = true;
+    }));
+  };
+  const update = (dt: number) => {
+    if (ledTex) ledTex.offset.x = (ledTex.offset.x + dt * 0.012) % 1;
+  };
+  return { renderer, scene, camera, sun, stumps: { near, far }, crowd: stand, resize, setAds, update };
 }

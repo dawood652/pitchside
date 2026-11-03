@@ -1,33 +1,38 @@
-// Directs the 3D scene from the game state: bowler run-up and windmill, batter backlift and
-// shot (bat solved procedurally, arms by IK), keeper, umpire, fielders chasing, ball, cameras.
+// Directs the 3D scene from the game state.
+// Batting is solved from the ball: the batter steps (front or back foot, leg IK) toward where the
+// ball will be, and the bat swings on an arc that passes exactly through the ball's position at
+// the moment of contact (arms by IK onto the handle). Mistimed swings pass through that point at
+// the wrong time, so you see the miss. Fielders chase, catch or collect; cameras follow the ball.
 import * as THREE from 'three';
-import { BallFlight, Delivery, deliveryPos, defaultField, flightTime, PITCH_LEN } from '../engine';
+import { Delivery, deliveryPos, flightTime, PITCH_LEN, PlannedShot, ropeField } from '../engine';
 import { createArena, W } from './arena';
 import { armour, makeBat, Person } from './people';
 import { KitLook, loadPlayerAsset, PlayerAsset } from './playerModel';
 
 const UP = new THREE.Vector3(0, 1, 0);
 export const RUNUP = 1.35;
+const BAT_SWEET = 0.62; // handle top to sweet spot (m)
 
 export interface View {
   phase: 'menu' | 'runup' | 'ball' | 'field' | 'result' | 'over';
-  t: number;
+  t: number; // time in phase
   d: Delivery | null;
-  swing: { at: number; dx: number; dy: number; loft: boolean; block: boolean } | null;
-  hit: boolean;
-  wicket: boolean;
-  flight: BallFlight | null;
+  swingAt: number | null; // ball time of the tap
+  target: { x: number; z: number } | null; // field point aimed at
+  shot: PlannedShot | null;
+  contact: { x: number; y: number; z: number } | null; // field coords of the ball at contact
   swingLead: number;
+  wicket: boolean;
 }
 
-function kit(primary: string, secondary: string, keeper = false, n = 7, name = ''): KitLook {
-  return { primary, secondary, shorts: primary, socks: primary, boots: '#f2f2f2', skin: ['#e0ac69', '#c68642', '#8d5524', '#f1c9a5'][n % 4], hair: '#1b1b1b', pattern: 'plain', numberColor: secondary, number: n, name, keeper, hairStyle: n % 3 };
+function kit(primary: string, secondary: string, keeper = false, n = 7): KitLook {
+  return { primary, secondary, shorts: primary, socks: primary, boots: '#f2f2f2', skin: ['#e0ac69', '#c68642', '#8d5524', '#f1c9a5'][n % 4], hair: '#1b1b1b', pattern: 'plain', numberColor: secondary, number: n, name: '', keeper, hairStyle: n % 3 };
 }
-
 const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
 };
+const fw = (p: { x: number; y?: number; h?: number; z: number }) => W(p.x, p.y ?? p.h ?? 0, p.z);
 
 export class Match3D {
   arena;
@@ -41,18 +46,17 @@ export class Match3D {
   private bat = makeBat();
   private ball: THREE.Mesh;
   private shadow: THREE.Mesh;
-  private camPos = new THREE.Vector3(0.5, 2.7, -7);
-  private camLook = new THREE.Vector3(0, 0.9, 11);
+  private camPos = new THREE.Vector3(0.6, 2.9, -3.7);
+  private camLook = new THREE.Vector3(0, 0.75, 12);
   private lastPhase = '';
   private wicketDone = false;
-  /** test hook: fixed camera [pos, look] */
+  private stance: { l: THREE.Vector3; r: THREE.Vector3 } | null = null;
   debugCam: [THREE.Vector3, THREE.Vector3] | null = null;
 
   constructor(container: HTMLElement, mobile: boolean) {
     this.arena = createArena(container, mobile);
     this.ball = new THREE.Mesh(new THREE.SphereGeometry(0.036, 16, 12), new THREE.MeshStandardMaterial({ color: 0xb3121f, roughness: 0.35 }));
-    const seam = new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.004, 4, 24), new THREE.MeshStandardMaterial({ color: 0xf5efe0 }));
-    this.ball.add(seam);
+    this.ball.add(new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.004, 4, 24), new THREE.MeshStandardMaterial({ color: 0xf5efe0 })));
     this.ball.castShadow = true;
     this.shadow = new THREE.Mesh(new THREE.CircleGeometry(0.05, 12), new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.3 }));
     this.shadow.rotation.x = -Math.PI / 2;
@@ -75,21 +79,29 @@ export class Match3D {
     this.keeper = new Person(this.asset, kit(bowlKit[0], bowlKit[1], true, 1), sc);
     armour(this.keeper, true, 0x222222);
     this.umpire = new Person(this.asset, kit('#f4f4ee', '#111111', false, 0), sc);
-    this.fielders = defaultField(false).map((f, i) => {
+    this.fielders = ropeField().map((f, i) => {
       const p = new Person(this.asset, kit(bowlKit[0], bowlKit[1], false, 2 + i), sc);
       const home = W(f.x, 0, f.z);
-      p.place(home.x, home.z, Math.atan2(-home.x, -home.z));
       return { p, x: home.x, z: home.z, home };
     });
     this.keeper.place(0, -1.9, 0);
     this.umpire.place(0.7, PITCH_LEN + 2.2, Math.PI);
     this.umpire.play('Idle_FoldArms_Loop');
-    this.nonStriker.place(1.5, PITCH_LEN - 1.4, Math.PI);
+    this.stance = null;
   }
 
-  /** Field angle (0 = straight) to a world direction. */
-  private dirW(a: number): THREE.Vector3 {
-    return new THREE.Vector3(-Math.sin(a), 0, Math.cos(a));
+  /** Field point under a screen position (tap-to-hit target). */
+  pick(sx: number, sy: number): { x: number; z: number } {
+    const cam = this.arena.camera;
+    const el = this.arena.renderer.domElement.getBoundingClientRect();
+    const ndc = new THREE.Vector2(((sx - el.left) / el.width) * 2 - 1, -((sy - el.top) / el.height) * 2 + 1);
+    const ray = new THREE.Raycaster();
+    ray.setFromCamera(ndc, cam);
+    const o = ray.ray.origin;
+    const d = ray.ray.direction;
+    const t = Math.min(400, d.y < -0.02 ? -o.y / d.y : 400); // tapping the sky: same direction, far away
+    const p = o.clone().addScaledVector(d, t);
+    return { x: -p.x, z: p.z };
   }
 
   update(dt: number, v: View): void {
@@ -109,6 +121,7 @@ export class Match3D {
       this.arena.stumps.near.break(1);
     }
     this.arena.stumps.near.update(dt);
+    this.arena.update(dt);
     this.updateBowler(dt, v);
     this.updateBatter(dt, v);
     this.updateOthers(dt, v);
@@ -119,12 +132,10 @@ export class Match3D {
 
   private updateBowler(dt: number, v: View): void {
     const b = this.bowler;
-    const x = -0.55;
     let z: number;
-    let k = 0; // windmill progress
+    let k = 0;
     if (v.phase === 'runup') {
-      const u = v.t / RUNUP;
-      z = PITCH_LEN + 9.5 - 10.5 * (1 - (1 - u) * (1 - u) * 0.35) * u;
+      z = PITCH_LEN + 9.5 - 10.5 * (v.t / RUNUP);
       b.play(v.t < 1.0 ? 'Sprint_Loop' : 'Jog_Fwd_Loop', v.t < 1.0 ? 1.1 : 0.8);
       k = Math.max(0, (v.t - 1.05) / 0.6);
     } else {
@@ -133,83 +144,120 @@ export class Match3D {
       b.play(tt < 1.4 ? 'Jog_Fwd_Loop' : 'Idle_Loop', 0.7, 0.4);
       k = Math.min(1.4, (RUNUP + tt - 1.05) / 0.6);
     }
-    b.place(x, z, Math.PI);
+    b.place(-0.55, z, Math.PI);
     b.update(dt);
     if (k > 0 && k < 1.35) {
       const fwd = new THREE.Vector3(0, 0, -1);
       const psi = 3.74 - 4.64 * Math.min(1, k);
       const w = k < 1 ? 1 : 1 - (k - 1) / 0.35;
-      b.aim('upperarm_r', fwd.clone().multiplyScalar(Math.cos(psi)).addScaledVector(UP, Math.sin(psi)), w);
-      b.aim('lowerarm_r', fwd.clone().multiplyScalar(Math.cos(psi)).addScaledVector(UP, Math.sin(psi)), w);
+      const arm = fwd.clone().multiplyScalar(Math.cos(psi)).addScaledVector(UP, Math.sin(psi));
+      b.aim('upperarm_r', arm, w);
+      b.aim('lowerarm_r', arm, w);
       const pl = 1.3 - 2.7 * smooth(0.1, 0.55, k);
       b.aim('upperarm_l', fwd.clone().multiplyScalar(Math.cos(pl)).addScaledVector(UP, Math.sin(pl)).add(new THREE.Vector3(-0.3, 0, 0)), w);
     }
   }
 
+  /** Ball time now (negative during the run-up), or a large number after the ball. */
+  private ballTime(v: View): number {
+    return v.phase === 'ball' ? v.t : v.phase === 'runup' ? v.t - RUNUP : 99;
+  }
+
   private updateBatter(dt: number, v: View): void {
     const p = this.batter;
-    p.place(0.3, 1.05, -Math.PI / 2);
-    p.play('Idle_Loop', 0.6);
+    const base = new THREE.Vector3(0.3, 0, 1.05);
+    const bt = this.ballTime(v);
+    const d = v.d;
+    const T = d ? flightTime(d) - 0.3 / d.speed : 0.6;
+    const sw = v.swingAt;
+    const contactT = sw !== null ? sw + v.swingLead : T;
+    // ---- footwork: front foot to full balls, back foot to short ones, toward the line
+    const front = !d || !['short', 'bouncer'].includes(d.length);
+    const lineW = d ? W(deliveryPos(d, T).x, 0, 0).x : 0;
+    const idle = v.phase === 'menu' || v.phase === 'over' || v.phase === 'runup';
+    const strideStart = sw !== null ? Math.min(sw - 0.05, contactT - 0.28) : T - 0.25;
+    const stride = idle ? 0 : sw !== null || v.phase !== 'ball' ? smooth(strideStart, contactT - 0.03, Math.min(bt, contactT)) : smooth(T - 0.25, T, bt) * 0.4;
+    const strideVec = front ? new THREE.Vector3((lineW - 0.1) * 0.5, 0, 0.55) : new THREE.Vector3(lineW * 0.3, 0, -0.32);
+    const root = base.clone().addScaledVector(strideVec, stride * (front ? 0.45 : 0.6));
+    p.place(root.x, root.z, -Math.PI / 2);
+    p.play('Idle_Loop', 0.5);
     p.update(dt);
-    // shot geometry
-    const sw = v.swing;
-    const a = sw ? Math.atan2(sw.dx, sw.dy || (sw.dx === 0 ? 1 : 0)) : 0;
-    const loft = !!sw?.loft;
-    const T = v.d ? flightTime(v.d) - 0.3 / v.d.speed : 0.6;
-    const ballT = v.phase === 'ball' ? v.t : v.phase === 'runup' ? -RUNUP + v.t : 99;
-    let theta: number;
-    const back = -0.55 - 1.45 * smooth(-0.25, 0.3, ballT);
-    if (sw && !sw.block) {
-      const contact = sw.at + v.swingLead;
-      const st = v.phase === 'ball' ? v.t : contact + 1;
-      if (st < sw.at) theta = back;
-      else if (st < contact) theta = back + (0 - back) * smooth(sw.at, contact, st);
-      else theta = (loft ? 2.7 : 1.9) * smooth(contact, contact + 0.35, st);
-    } else if (sw?.block) theta = v.phase === 'ball' && v.t < sw.at ? back : 0.1;
-    else if (v.phase === 'ball' && ballT > T - 0.05) theta = back - 0.5 * smooth(T - 0.05, T + 0.2, ballT); // shoulder arms
-    else if (v.phase === 'result' || v.phase === 'field') theta = -2.3;
-    else theta = back;
-    if (v.phase === 'menu' || v.phase === 'over') theta = -0.55;
-    const s = this.dirW(sw ? a : 0);
-    const tau = sw && !sw.block ? (Math.abs(a) > 1.0 && !loft ? 1.15 : 0.15 + Math.abs(a) * 0.15) : 0.1;
-    const side = new THREE.Vector3().crossVectors(s, UP).normalize();
-    const down = UP.clone().multiplyScalar(-Math.cos(tau)).addScaledVector(side, Math.sin(tau) * (a >= 0 ? 1 : -1));
-    const pelvis = p.m.bones.get('pelvis')!.getWorldPosition(new THREE.Vector3());
-    const C = pelvis.clone().addScaledVector(UP, 0.42).addScaledVector(s, 0.14).add(new THREE.Vector3(0, 0, 0.05));
-    const D = s.clone().multiplyScalar(Math.sin(theta)).addScaledVector(down, Math.cos(theta)).normalize();
-    const H = C.clone().addScaledVector(D, 0.4);
-    // upper body follows the swing a little
-    p.turn('spine_02', UP, Math.max(-0.4, Math.min(0.6, -theta * 0.18)) * (sw ? 1 : 0.5));
-    const pole = new THREE.Vector3(0, -1, 0).addScaledVector(s, -0.4);
+    if (!this.stance) {
+      // where the feet sit in the stance (relative to the root), a little wider and open
+      this.stance = { l: p.footPos('l').sub(p.m.root.position), r: p.footPos('r').sub(p.m.root.position) };
+      this.stance.l.add(new THREE.Vector3(0, 0, 0.1));
+      this.stance.r.add(new THREE.Vector3(0, 0, -0.08));
+    }
+    // feet: back foot planted (or pushed back), front foot steps out on a small arc
+    const backFoot = base.clone().add(this.stance.r).addScaledVector(strideVec, front ? 0 : stride);
+    const frontFoot = base.clone().add(this.stance.l).addScaledVector(strideVec, front ? stride : stride * 0.4);
+    frontFoot.y += Math.sin(stride * Math.PI) * 0.12;
+    const kneePole = new THREE.Vector3(-1, 0.2, 0.4);
+    p.m.model.position.y = -0.07 - stride * 0.06; // knees bend into the shot
+    p.m.root.updateMatrixWorld(true);
+    p.step('r', backFoot, kneePole);
+    p.step('l', frontFoot, kneePole);
+
+    // ---- bat arc through the contact point
+    const ballAt = (t: number) => (d ? fw(deliveryPos(d, t)) : new THREE.Vector3(0, 0.6, 1.6));
+    const B = v.contact ? fw(v.contact) : ballAt(contactT);
+    const aimDir = v.target ? new THREE.Vector3(-v.target.x, 0, v.target.z).normalize() : new THREE.Vector3(0, 0, 1);
+    const P = p.m.bones.get('spine_03')!.getWorldPosition(new THREE.Vector3()).addScaledVector(UP, -0.05);
+    const toB = B.clone().sub(P);
+    const reachLen = toB.length();
+    const Dc = toB.normalize();
+    const Hc = B.clone().addScaledVector(Dc, -Math.min(BAT_SWEET, reachLen - 0.22));
+    let n = new THREE.Vector3().crossVectors(Dc, aimDir);
+    if (n.lengthSq() < 0.05) n = new THREE.Vector3().crossVectors(Dc, new THREE.Vector3(-1, 0, 0));
+    n.normalize();
+    const aerial = v.shot ? v.shot.kind === 'six' || v.shot.kind === 'catch' || v.shot.kind === 'drop' : true;
+    let theta: number; // angle along the arc; 0 = bat on the ball
+    // stance: bat grounded by the toes; backlift starts as the bowler loads up
+    const backlift = -0.2 - 1.9 * smooth(-0.3, 0.35, bt);
+    if (v.phase === 'menu' || v.phase === 'over') theta = -0.2;
+    else if (sw !== null) {
+      if (bt < sw) theta = backlift;
+      else if (bt < contactT) theta = backlift * (1 - smooth(sw, contactT, bt));
+      else theta = (aerial ? 2.6 : 1.9) * smooth(contactT, contactT + 0.32, bt);
+    } else if (bt > T - 0.08) theta = backlift - 0.6 * smooth(T - 0.08, T + 0.15, bt); // leave: bat up out of the way
+    else theta = backlift;
+    const q = new THREE.Quaternion().setFromAxisAngle(n, theta);
+    const D = Dc.clone().applyQuaternion(q);
+    const H = P.clone().add(Hc.clone().sub(P).applyQuaternion(q));
+    p.turn('spine_02', UP, Math.max(-0.5, Math.min(0.7, -theta * 0.22))); // torso turns with the swing
+    const pole = new THREE.Vector3(0, -1, 0).addScaledVector(aimDir, -0.5);
     p.reach('l', H.clone().addScaledVector(D, 0.02), pole);
-    p.reach('r', H.clone().addScaledVector(D, 0.13), pole);
-    // place the bat on the hands
+    p.reach('r', H.clone().addScaledVector(D, 0.12), pole);
     const y = D.clone().negate();
-    const zAx = s.clone().sub(D.clone().multiplyScalar(s.dot(D))).normalize();
-    const xAx = new THREE.Vector3().crossVectors(y, zAx);
+    const zAx = aimDir.clone().sub(D.clone().multiplyScalar(aimDir.dot(D))).normalize();
+    const xAx = new THREE.Vector3().crossVectors(y, zAx).normalize();
     this.bat.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xAx, y, zAx));
-    this.bat.position.copy(H).addScaledVector(D, -0.04);
-    // watch the ball
-    p.look(v.phase === 'ball' && v.d ? this.ballWorld(v) : new THREE.Vector3(0, 1.5, PITCH_LEN), 1);
+    this.bat.position.copy(H);
+    p.look(v.phase === 'ball' ? ballAt(Math.min(bt, T)) : v.phase === 'field' ? this.ballWorld(v) : new THREE.Vector3(0, 1.5, PITCH_LEN));
   }
 
   private ballWorld(v: View): THREE.Vector3 {
-    if (v.phase === 'field' && v.flight) {
-      const path = v.flight.path;
-      const i = Math.min(path.length - 1, Math.floor(v.t * 30));
-      const q = path[Math.max(0, i)];
-      return W(q.x, q.h, q.z);
+    const s = v.shot;
+    if ((v.phase === 'field' || v.phase === 'result') && s && s.path.length && v.contact) {
+      const tt = v.phase === 'field' ? v.t : s.endT + 1;
+      const i = Math.min(s.path.length - 1, Math.max(0, Math.floor(tt * 30)));
+      const q = s.path[i];
+      if ((s.kind === 'catch' && tt >= s.endT - 0.05) || (s.kind === 'runs' && tt >= s.endT)) {
+        const f = s.fielder !== null ? this.fielders[s.fielder] : null;
+        if (f) return f.p.handPos('r');
+        if (s.kind === 'catch') return this.keeper.handPos('r');
+      }
+      return W(q.x + v.contact.x, q.h + (i === 0 ? v.contact.y : 0), q.z + v.contact.z);
     }
     if (v.d && (v.phase === 'ball' || v.phase === 'result')) {
-      const tt = v.phase === 'ball' ? v.t : flightTime(v.d) + Math.min(0.35, v.t);
-      const q = deliveryPos(v.d, tt);
-      return W(q.x, q.y, q.z);
+      const tt = v.phase === 'ball' ? v.t : flightTime(v.d) + Math.min(0.4, v.t);
+      return fw(deliveryPos(v.d, tt));
     }
     return this.bowler.handPos('r');
   }
 
   private updateBall(v: View): void {
-    const hide = v.phase === 'menu' || v.phase === 'over' || (v.phase === 'result' && v.hit);
+    const hide = v.phase === 'menu' || v.phase === 'over' || (v.phase === 'result' && (v.shot?.kind === 'six' || v.shot?.kind === 'four'));
     this.ball.visible = this.shadow.visible = !hide;
     const p = this.ballWorld(v);
     this.ball.position.copy(p);
@@ -219,7 +267,6 @@ export class Match3D {
   }
 
   private updateOthers(dt: number, v: View): void {
-    // keeper crouches as the bowler runs in, rises with the ball
     this.keeper.play(v.phase === 'runup' || (v.phase === 'ball' && v.t < 0.25) ? 'Crouch_Idle_Loop' : 'Idle_Loop', 1, 0.25);
     this.keeper.update(dt);
     this.keeper.look(this.ballWorld(v));
@@ -227,45 +274,48 @@ export class Match3D {
     this.nonStriker.play(v.phase === 'runup' ? 'Walk_Loop' : 'Idle_Loop', 0.6);
     this.nonStriker.place(1.5, PITCH_LEN - 1.4 - (v.phase === 'runup' ? v.t * 0.8 : v.phase === 'ball' ? 1.1 : 0), Math.PI);
     this.nonStriker.update(dt);
-    // fielders: walk in with the bowler, chase the ball when it's hit
+    const s = v.shot;
     const bw = this.ballWorld(v);
     let chaser = -1;
-    if (v.phase === 'field' && v.flight) {
-      chaser = v.flight.result.fielder ?? -1;
-      if (chaser < 0) {
-        const end = v.flight.path.at(-1)!;
+    let goal: THREE.Vector3 | null = null;
+    if ((v.phase === 'field' || v.phase === 'result') && s && s.path.length && v.contact) {
+      const end = s.path.at(-1)!;
+      goal = W(end.x + v.contact.x, 0, end.z + v.contact.z);
+      chaser = s.fielder ?? -1;
+      if (chaser < 0 && s.kind !== 'catch') {
         let best = 1e9;
         this.fielders.forEach((f, i) => {
-          const d = Math.hypot(f.x + end.x, f.z - end.z);
-          if (d < best) {
-            best = d;
+          const dd = Math.hypot(f.x - goal!.x, f.z - goal!.z);
+          if (dd < best) {
+            best = dd;
             chaser = i;
           }
         });
       }
     }
     this.fielders.forEach((f, i) => {
-      let tx = f.x;
-      let tz = f.z;
       let speed = 0;
-      if (v.phase === 'field' && v.flight && v.t > 0.3) {
-        const end = v.flight.path.at(-1)!;
-        const goal = i === chaser ? new THREE.Vector3(-end.x, 0, end.z) : bw.clone().setY(0);
-        const dx = goal.x - f.x;
-        const dz = goal.z - f.z;
+      if (goal && v.phase === 'field' && s) {
+        const tgt = i === chaser ? goal : bw.clone().setY(0);
+        const dx = tgt.x - f.x;
+        const dz = tgt.z - f.z;
         const dist = Math.hypot(dx, dz);
-        speed = i === chaser ? 6.8 : dist > 25 ? 0 : 2.2;
-        if (dist > 0.4 && speed > 0) {
-          tx = f.x + (dx / dist) * Math.min(dist, speed * dt);
-          tz = f.z + (dz / dist) * Math.min(dist, speed * dt);
+        const tLeft = Math.max(0.15, s.endT - v.t);
+        speed = i === chaser ? Math.min(7.5, Math.max(3, dist / tLeft)) : dist > 30 ? 0 : 1.8;
+        if (dist > 0.35) {
+          f.x += (dx / dist) * Math.min(dist, speed * dt);
+          f.z += (dz / dist) * Math.min(dist, speed * dt);
         } else speed = 0;
       }
-      const yaw = Math.atan2(bw.x - tx, bw.z - tz);
-      f.x = tx;
-      f.z = tz;
-      f.p.place(tx, tz, yaw);
-      f.p.play(speed > 4 ? 'Sprint_Loop' : speed > 0.5 ? 'Jog_Fwd_Loop' : v.phase === 'runup' ? 'Walk_Loop' : 'Idle_Loop', speed > 4 ? 1.1 : 0.7);
+      f.p.place(f.x, f.z, Math.atan2(bw.x - f.x, bw.z - f.z));
+      const celebrating = v.phase === 'result' && s?.kind === 'catch' && i === chaser;
+      f.p.play(celebrating ? 'Celebration' : speed > 4 ? 'Sprint_Loop' : speed > 0.5 ? 'Jog_Fwd_Loop' : v.phase === 'runup' ? 'Walk_Loop' : 'Idle_Loop', speed > 4 ? 1.15 : 0.8);
       f.p.update(dt);
+      // hands up to take the catch as the ball drops in
+      if (i === chaser && s && (s.kind === 'catch' || s.kind === 'drop') && v.phase === 'field' && v.t > s.endT - 0.6) {
+        f.p.reach('l', bw.clone().add(new THREE.Vector3(0.06, 0, 0)), new THREE.Vector3(0, -1, 0));
+        f.p.reach('r', bw.clone().add(new THREE.Vector3(-0.06, 0, 0)), new THREE.Vector3(0, -1, 0));
+      }
     });
   }
 
@@ -273,17 +323,18 @@ export class Match3D {
     const cam = this.arena.camera;
     let pos: THREE.Vector3;
     let look: THREE.Vector3;
-    if (v.phase === 'field' && v.flight) {
+    // stay on the batter through the follow-through, then follow the ball
+    if (((v.phase === 'field' && v.t > 0.4) || (v.phase === 'result' && v.shot?.path.length)) && v.shot) {
       const b = this.ballWorld(v);
-      pos = new THREE.Vector3(b.x * 0.45, 13 + Math.hypot(b.x, b.z) * 0.12, b.z * 0.45 - 20);
-      look = b.clone().setY(Math.max(0, b.y * 0.5));
+      const far = Math.hypot(b.x, b.z);
+      pos = new THREE.Vector3(b.x * 0.4, 9 + far * 0.18 + b.y * 0.3, b.z * 0.4 - 16);
+      look = b.clone().setY(Math.max(0, b.y * 0.6));
     } else {
-      // high behind the batter, over the keeper's head
       pos = new THREE.Vector3(0.6, 2.9, -3.7);
       look = new THREE.Vector3(0, 0.75, 12);
     }
     if (this.debugCam) [pos, look] = this.debugCam;
-    const k = 1 - Math.exp(-dt * (v.phase === 'field' ? 4 : 6));
+    const k = 1 - Math.exp(-dt * (v.phase === 'field' ? 3.5 : 6));
     this.camPos.lerp(pos, k);
     this.camLook.lerp(look, k);
     cam.position.copy(this.camPos);
