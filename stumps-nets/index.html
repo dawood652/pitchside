@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>Stumps Nets</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1b12; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
+  #app { position: fixed; inset: 0; }
+  #rotate { display: none; position: fixed; inset: 0; z-index: 9; background: #0d1b12; color: #f6f3ea; font: 700 20px system-ui, sans-serif; text-align: center; place-items: center; padding: 24px; }
+  @media (orientation: portrait) and (pointer: coarse) { #rotate { display: grid; } }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="rotate"><div><div style="font-size:54px">⟳</div>Turn your phone sideways to bat</div></div>
+<script type="module" src="/src/main.ts"></script>
+</body>
+</html>
