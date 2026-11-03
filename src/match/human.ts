@@ -10,6 +10,7 @@ import { angleDiff, V2 } from '../core/vec';
 
 let charging = false;
 let chargeT = 0;
+let passCharge: { btn: 'pass' | 'through' | 'lob'; kind: PassKind; t: number } | null = null;
 
 /**
  * Screen → world, relative to the camera: with the broadcast view (viewYaw 0) screen right = +x and
@@ -26,7 +27,8 @@ function worldMove(s: MatchState, input: Input): V2 {
   return toWorld(s, input.move());
 }
 
-export function pickReceiver(s: MatchState, p: Player, dir: V2): Player | null {
+/** power (0..1, optional): a stronger pass prefers a teammate further away, like FC's power bar. */
+export function pickReceiver(s: MatchState, p: Player, dir: V2, power?: number): Player | null {
   const aim = Math.atan2(dir.x, dir.z);
   let best: Player | null = null;
   let bestCost = 1e9;
@@ -49,7 +51,8 @@ export function pickReceiver(s: MatchState, p: Player, dir: V2): Player | null {
       const off = Math.abs(ox * dz - oz * dx) / d;
       if (off < 2.2) block += (2.2 - off) / 2.2;
     }
-    const cost = da * 34 + d * 0.22 + block * 9 + (m.role === 'GK' ? 25 : 0);
+    const distCost = power === undefined ? d * 0.22 : Math.abs(d - (6 + power * 38)) * 0.35;
+    const cost = da * 34 + distCost + block * 9 + (m.role === 'GK' ? 25 : 0);
     if (cost < bestCost) {
       bestCost = cost;
       best = m;
@@ -152,16 +155,27 @@ export function updateHuman(s: MatchState, input: Input, dt: number): void {
       return;
     }
     if (input.pressed('finesse') && dGoal < 34) shootBy(s, p, 0.65, hasMove && Math.abs(mv.z) > 0.3 ? mv.z : null, 'finesse');
-    else if (input.pressed('pass')) passTo(s, p, pickReceiver(s, p, dir), 'ground', dir);
-    else if (input.pressed('through')) passTo(s, p, pickReceiver(s, p, dir), 'through', dir);
-    else if (input.pressed('lob')) {
-      // Near goal and facing it, L chips the keeper
-      if (dGoal < 26 && facingGoal && Math.abs(p.pos.z) < 14) shootBy(s, p, 0.6, null, 'chip');
-      else passTo(s, p, pickReceiver(s, p, dir), 'lob', dir);
+    // Passes charge while the button is held (FC power bar): power picks how far and how hard
+    const kinds: ['pass' | 'through' | 'lob', PassKind][] = [['pass', 'ground'], ['through', 'through'], ['lob', 'lob']];
+    for (const [btn, kind] of kinds) if (input.pressed(btn) && !passCharge) passCharge = { btn, kind, t: 0 };
+    if (passCharge) {
+      passCharge.t += dt;
+      s.shotCharge = Math.min(1, passCharge.t / KICK.passChargeTime);
+      if (input.released(passCharge.btn) || !input.held(passCharge.btn) || passCharge.t > KICK.passChargeTime * 1.4) {
+        // A quick tap is an assisted, auto-weighted pass to the chosen teammate; holding adds power
+        const power = passCharge.t < 0.12 ? undefined : Math.max(0.2, Math.min(1, passCharge.t / KICK.passChargeTime));
+        const kind = passCharge.kind;
+        passCharge = null;
+        s.shotCharge = -1;
+        // Near goal and facing it, the lob button chips the keeper
+        if (kind === 'lob' && dGoal < 26 && facingGoal && Math.abs(p.pos.z) < 14) shootBy(s, p, 0.6, null, 'chip');
+        else passTo(s, p, pickReceiver(s, p, dir, power), kind, dir, power);
+      }
     }
     return;
   }
   charging = false;
+  passCharge = null;
   s.shotCharge = -1;
   s.tapPass = null;
   if (p.busy) return;
@@ -170,9 +184,18 @@ export function updateHuman(s: MatchState, input: Input, dt: number): void {
   const opp = s.owner && s.owner.team !== p.team ? s.owner : null;
   let sp = p.maxSpeed(false);
   let target: V2 | null = null;
-  if (!s.owner && s.intendedReceiver === p && !hasMove) {
-    // Assisted receive: run onto the pass
-    target = intercept(p, s.ball).pt;
+  if (!s.owner && s.intendedReceiver === p) {
+    // Assisted receive: the receiver always comes to meet the pass (stick held toward it adds a run)
+    const ic = intercept(p, s.ball).pt;
+    target = ic;
+    if (hasMove) {
+      const da = Math.abs(angleDiff(Math.atan2(mv.x, mv.z), Math.atan2(ic.x - p.pos.x, ic.z - p.pos.z)));
+      if (da < 0.8) target = { x: ic.x + mv.x * 1.5, z: ic.z + mv.z * 1.5 };
+    }
+    // Attack the ball: sprint if it's still far, ease in when close
+    p.sprint = Math.hypot(ic.x - p.pos.x, ic.z - p.pos.z) > 3;
+    sp = p.maxSpeed(p.sprint);
+    p.faceTowards(s.ball.pos.x, s.ball.pos.z);
   } else if (!s.owner && s.assist.collect && s.ball.pos.y < 2.5) {
     // FC-style assisted collection: a loose ball within reach pulls the player onto it,
     // unless the stick points clearly away from it

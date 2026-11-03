@@ -46,9 +46,10 @@ export const PLAYER = {
 };
 
 export const KICK = {
-  passEndSpeed: 6.5, // ground passes still arrive firmly
+  passEndSpeed: 8, // ground passes still arrive firmly
+  passChargeTime: 0.6, // seconds of holding for a full-power pass
   passMax: 30,
-  passMin: 11,
+  passMin: 13,
   throughLead: 7,
   shotMin: 14,
   shotMax: 32,

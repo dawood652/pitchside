@@ -29,14 +29,16 @@ function leadTarget(receiver: Player, from: V2, kind: PassKind, dirX: number): V
   return target;
 }
 
-export function passTo(s: MatchState, p: Player, receiver: Player | null, kind: PassKind, dirFallback?: V2): void {
+/** power 0..1 (from the held button): harder, faster passes. Undefined = AI/assisted default. */
+export function passTo(s: MatchState, p: Player, receiver: Player | null, kind: PassKind, dirFallback?: V2, power?: number): void {
   if (s.owner !== p || s.pending) return;
   const from = { x: s.ball.pos.x, z: s.ball.pos.z };
   let target: V2;
   if (receiver) target = leadTarget(receiver, from, kind, s.attackDir[p.team]);
   else {
     const d = dirFallback ?? p.forward;
-    const dist = kind === 'lob' ? 30 : kind === 'through' ? 22 : 15;
+    const pw = power ?? 0.4;
+    const dist = kind === 'lob' ? 18 + pw * 30 : kind === 'through' ? 12 + pw * 25 : 8 + pw * 30;
     target = { x: from.x + d.x * dist, z: from.z + d.z * dist };
   }
   // Passing accuracy
@@ -48,7 +50,10 @@ export function passTo(s: MatchState, p: Player, receiver: Player | null, kind: 
   const sn = Math.sin(ang);
   target = { x: from.x + dx * c - dz * sn, z: from.z + dx * sn + dz * c };
 
-  const v = kind === 'lob' ? lobPass(from, target, Math.hypot(dx, dz) > 35 ? 0.66 : 0.58) : groundPass(from, target, kind === 'through' ? 6 : KICK.passEndSpeed);
+  // More power = the ball still travels fast when it arrives (driven pass); tap = softer, weighted pass
+  const pw = power ?? 0.45;
+  const vEnd = (kind === 'through' ? 5 : KICK.passEndSpeed) + (pw - 0.45) * 12;
+  const v = kind === 'lob' ? lobPass(from, target, Math.hypot(dx, dz) > 35 ? 0.66 - (pw - 0.5) * 0.2 : 0.58 - (pw - 0.5) * 0.15) : groundPass(from, target, Math.max(2.5, vEnd));
   p.faceTowards(target.x, target.z);
   const dur = kind === 'lob' ? KICK_DUR.lob : KICK_DUR.pass;
   p.startAction(kind === 'lob' ? 'lob' : 'pass', dur, Math.min(1, Math.hypot(v.vx, v.vz) / 28));
