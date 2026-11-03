@@ -6,6 +6,7 @@ import { Player } from '../entities/player';
 import { PlayerModel } from '../render/playerModel';
 import { neutralPose, Pose, POSE_KEYS, BASE_HIP } from './pose';
 import * as clips from './clips';
+import { pickGf, GfCat } from './gfSelect';
 
 const R = new THREE.Vector3(-1, 0, 0); // character right
 const F = new THREE.Vector3(0, 0, 1); // character forward
@@ -42,6 +43,10 @@ export class PlayerAnimator {
   private procW = 0;
   private lookYaw = 0;
   private charQuat = new THREE.Quaternion();
+  // touch animation (dribble cut / first touch) playing outside of a game action
+  private touchClip: { name: string; start: number; left: number } | null = null;
+  // clip picked for the current kick action
+  private kickPick: { action: string; t0: number; name: string; start: number } | null = null;
 
   constructor(private m: PlayerModel, clipMap: Map<string, THREE.AnimationClip>) {
     this.mixer = new THREE.AnimationMixer(m.model);
@@ -66,14 +71,24 @@ export class PlayerAnimator {
    * exactly when the simulation releases it: start = (key - contactDelay * timeScale) / duration.
    */
   private wantedClip(p: Player, ctx: AnimContext): [string, number, number, boolean] | null {
-    const foot = (right: string, left: string) => (p.leftFooted ? left : right);
     switch (p.action) {
       case 'pass':
-        return [foot('mc_pass', 'mc_pass_M'), 0.31, 1.5, false];
       case 'lob':
-        return [foot('mc_pass', 'mc_pass_M'), 0.3, 1.4, false];
-      case 'shot':
-        return [foot('mc_shot_M', 'mc_shot'), 0.31, 1.3, false];
+      case 'shot': {
+        // Pick once per kick: the clip whose ball direction and run-up speed fit, started so its
+        // foot contact lands on the simulation's contact moment (CONTACT share of the action)
+        if (!this.kickPick || this.kickPick.action !== p.action || p.actionT < this.kickPick.t0) {
+          const cat: GfCat = p.action === 'shot' ? 'shot' : 'pass';
+          const g = pickGf(cat, p.speed, (p.kickAngle * 180) / Math.PI, p.id);
+          const contactIn = Math.max(0, p.actionDur * 0.3 - p.actionT);
+          if (g) this.kickPick = { action: p.action, t0: p.actionT, name: g.clip, start: Math.max(0, g.touch - contactIn) };
+        }
+        if (this.kickPick) {
+          const d = this.actions.get(this.kickPick.name)?.getClip().duration ?? 1;
+          return [this.kickPick.name, this.kickPick.start / d, 1, false];
+        }
+        return null;
+      }
       case 'throwin':
         return ['mc_throwin', 0.36, 1.2, false];
       case 'tackle':
@@ -98,6 +113,10 @@ export class PlayerAnimator {
       }
       default:
         break;
+    }
+    if (this.touchClip) {
+      const d = this.actions.get(this.touchClip.name)?.getClip().duration ?? 1;
+      return [this.touchClip.name, this.touchClip.start / d, 1, false];
     }
     if (ctx.outcome && p.speed < 0.5) {
       if (ctx.outcome === 'win') return ['Celebration', 0, 1, true];
@@ -130,6 +149,21 @@ export class PlayerAnimator {
   }
 
   update(dt: number, p: Player, holdingOverhead: boolean, ctx: AnimContext, at?: { x: number; z: number; facing: number }): void {
+    // A dribble cut or first touch from the simulation: play the matching touch animation
+    if (p.touchEvent) {
+      const g = pickGf(p.touchEvent.kind, p.speed, (p.touchEvent.angle * 180) / Math.PI, p.id);
+      const d = g ? (this.actions.get(g.clip)?.getClip().duration ?? 0) : 0;
+      if (g && d > 0 && p.action === 'none') {
+        const start = Math.max(0, g.touch - 0.06);
+        this.touchClip = { name: g.clip, start, left: Math.min(d - start, 0.75) };
+      }
+      p.touchEvent = null;
+    }
+    if (this.touchClip) {
+      this.touchClip.left -= dt;
+      if (this.touchClip.left <= 0 || p.action !== 'none') this.touchClip = null;
+    }
+    if (p.action !== 'pass' && p.action !== 'lob' && p.action !== 'shot') this.kickPick = null;
     const clipWant = this.wantedClip(p, ctx);
     const procWant = clipWant ? null : this.wantedProc(p, holdingOverhead);
 

@@ -15,4 +15,4 @@ npm run build    # single-file build in dist/
 ```
 The playable site is served from `docs/` (a copy of `dist/`).
 
-Player models and animations: Quaternius Universal Animation Library (CC0).
+Player models and animations: Quaternius Universal Animation Library (CC0). Football animations: Google Research Football (Apache 2.0) and Anderson Rohr Mocap Pack 05. See THIRD_PARTY.md.

@@ -4,6 +4,7 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "strict": true,
+    "resolveJsonModule": true,
     "noUnusedLocals": false,
     "lib": ["ES2020", "DOM"],
     "skipLibCheck": true,

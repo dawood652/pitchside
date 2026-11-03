@@ -93,6 +93,12 @@ export function carryBall(s: MatchState, dt: number): void {
   const sprinting = sp > PLAYER.jogSpeed + 0.4;
   let interval = (sprinting ? 0.42 : sp > 2.5 ? 0.3 : 0.24) * (1.12 - 0.22 * skill);
   let lead = sprinting ? 0.68 + (sp - 5.6) * 0.06 : 0.45 + sp * 0.04;
+  if (turn > 0.6) {
+    // show a real turning touch (angle relative to the body, + = left)
+    let rel = Math.atan2(dir.x, dir.z) - o.facing;
+    rel = Math.atan2(Math.sin(rel), Math.cos(rel));
+    o.touchEvent = { kind: 'ballcontrol', angle: rel };
+  }
   if (turn > 1.6) {
     // Effort touch on a drastic turn: slower, shorter, and you bleed speed
     lead = 0.45;
@@ -139,6 +145,11 @@ export function firstTouch(s: MatchState, p: Player, wantDir: { x: number; z: nu
     return;
   }
   // Clean touch into the direction asked for
+  {
+    let rel = Math.atan2(dir.x, dir.z) - p.facing;
+    rel = Math.atan2(Math.sin(rel), Math.cos(rel));
+    p.touchEvent = { kind: 'trap', angle: rel };
+  }
   // Cushioned touch that sets the ball just ahead of the feet in the direction asked for
   const tx = p.pos.x + dir.x * (0.45 + p.speed * 0.12);
   const tz = p.pos.z + dir.z * (0.45 + p.speed * 0.12);

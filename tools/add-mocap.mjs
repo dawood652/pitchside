@@ -13,12 +13,15 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { NodeIO } from '@gltf-transform/core';
 import { ALL_EXTENSIONS } from '@gltf-transform/extensions';
 import { CLIPS } from './mocap-clips.mjs';
+import { gfSource, gfCatalogue } from './gf-anim.mjs';
 
 globalThis.self = globalThis;
 const GLB = 'src/assets/player.glb';
 const FPS = 30;
 const dir = process.argv[2];
 const dump = process.argv.includes('--dump');
+// optional: Google Research Football engine folder (third_party/gfootball_engine)
+const gfDir = process.argv.find((a) => a.startsWith('--gf='))?.slice(5);
 
 // target bone -> [source bone, target child used for direction, source child]
 const MAP = {
@@ -68,7 +71,8 @@ const visit = (b) => {
 visit(tBones.get('root'));
 const tPelvisH = tRestP.get('pelvis').y;
 
-function retarget(file, spec, mirror) {
+/** UE5-mannequin FBX source (mocap pack). */
+function fbxSource(file) {
   const obj = new FBXLoader().parse(ab(fs.readFileSync(file)), '');
   let sMesh;
   obj.traverse((o) => {
@@ -79,15 +83,19 @@ function retarget(file, spec, mirror) {
   // The mixer animates the first node of each name in the hierarchy, which is a different copy
   // from the skin's bones: rest comes from the skin (bind pose), frames from the animated copy.
   const aBones = new Map([...sBones.keys()].map((n) => [n, THREE.PropertyBinding.findNode(obj, n)]));
+  return { obj, sBones, aBones, clip: obj.animations[0], setRest: () => sMesh.skeleton.pose(), map: MAP, hips: ['thigh_l', 'thigh_r'], pelvis: 'pelvis', swap: swapLR };
+}
+
+export function retarget(source, spec, mirror) {
+  const { obj, sBones, aBones, clip, map: SMAP, hips, pelvis: sPelvis, swap } = source;
   let bones = sBones;
-  const clip = obj.animations[0];
   const mixer = new THREE.AnimationMixer(obj);
   const act = mixer.clipAction(clip);
   act.play();
 
   // rest. The clip animates the FBX "root" bone differently from its bind pose (axis conversion),
   // so every frame is expressed relative to the root bone, then put back on the bind-pose root.
-  sMesh.skeleton.pose();
+  source.setRest();
   obj.updateMatrixWorld(true);
   const rootRestM = sBones.get('root').matrixWorld.clone();
   const corr = new THREE.Matrix4();
@@ -109,15 +117,20 @@ function retarget(file, spec, mirror) {
   obj.updateMatrixWorld(true);
   setCorr();
   const atKey = (n) => raw(n).p;
-  const sv = atKey('thigh_r').sub(atKey('thigh_l')).setY(0).normalize();
+  const sv = atKey(hips[1]).sub(atKey(hips[0])).setY(0).normalize();
   bones = sBones;
+  source.setRest();
+  obj.updateMatrixWorld(true);
   setCorr();
   const tv = tRestP.get('thigh_r').clone().sub(tRestP.get('thigh_l')).setY(0).normalize();
   const yawQ = new THREE.Quaternion().setFromUnitVectors(sv, tv);
-  const scale = tPelvisH / rest0.get('pelvis').p.y;
+  const scale = tPelvisH / rest0.get(sPelvis).p.y;
+  // optional per-frame heading lock (for clips whose turning the game does itself)
+  let fix = null;
   const conv = (r) => {
-    const q = yawQ.clone().multiply(r.q);
-    const p = r.p.clone().applyQuaternion(yawQ).multiplyScalar(scale);
+    const yq = fix ? yawQ.clone().multiply(fix) : yawQ;
+    const q = yq.clone().multiply(r.q);
+    const p = r.p.clone().applyQuaternion(yq).multiplyScalar(scale);
     if (mirror) {
       // reflect across the target's sagittal plane (x -> -x)
       q.set(q.x, -q.y, -q.z, q.w);
@@ -125,14 +138,14 @@ function retarget(file, spec, mirror) {
     }
     return { q, p };
   };
-  const src = (map, n) => conv(map.get(mirror ? swapLR(n) : n));
+  const src = (map, n) => conv(map.get(mirror ? swap(n) : n));
   const sRest = new Map([...sBones.keys()].map((n) => [n, src(rest0, n)]));
   bones = aBones;
 
   // direction alignment per target bone
   const align = new Map();
   for (const t of order) {
-    const m = MAP[t.name];
+    const m = SMAP[t.name];
     if (!m) continue;
     const [s, tc, sc] = m;
     if (tc && sc) {
@@ -152,14 +165,40 @@ function retarget(file, spec, mirror) {
   const n = Math.max(2, Math.round((t1 - t0) * FPS) + 1);
   const frames = [];
   for (let i = 0; i < n; i++) {
-    mixer.setTime(t0 + i / FPS);
+    mixer.setTime(t0 + Math.max(i / FPS, 1e-4)); // setTime(0) can leave the first pose unapplied
     obj.updateMatrixWorld(true);
     setCorr();
     const cur = new Map([...sBones.keys()].map((nm) => [nm, raw(nm)]));
     frames.push(cur);
   }
+  // heading lock: undo the actor's (smoothed) change of facing so the game's root rotation drives turns
+  const fixes = frames.map(() => null);
+  if (spec.headingLock) {
+    const head = frames.map((f) => {
+      const v = f.get(hips[1]).p.clone().sub(f.get(hips[0]).p);
+      return Math.atan2(v.x, v.z);
+    });
+    const h0 = head[0];
+    const un = [h0];
+    for (let i = 1; i < head.length; i++) un.push(un[i - 1] + Math.atan2(Math.sin(head[i] - head[i - 1]), Math.cos(head[i] - head[i - 1])));
+    const kk = 4;
+    for (let i = 0; i < un.length; i++) {
+      let a = 0, c = 0;
+      for (let j = Math.max(0, i - kk); j <= Math.min(un.length - 1, i + kk); j++) {
+        a += un[j];
+        c++;
+      }
+      fixes[i] = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), -(a / c - h0));
+    }
+  }
+  const srcF = (i, n) => {
+    fix = fixes[i];
+    const r = src(frames[i], n);
+    fix = null;
+    return r;
+  };
   // pelvis path (target space) for in-place removal
-  const pel = frames.map((f) => src(f, 'pelvis').p);
+  const pel = frames.map((f, i) => srcF(i, sPelvis).p);
   const k = Math.max(1, Math.round((spec.smooth ?? 0.5) * FPS));
   const drift = pel.map((_, i) => {
     let x = 0, z = 0, c = 0;
@@ -173,7 +212,7 @@ function retarget(file, spec, mirror) {
   const keep = spec.keepTravel ? 1 : 0;
 
   const tracks = new Map(); // bone -> Float32Array quats
-  for (const b of order) if (MAP[b.name]) tracks.set(b.name, new Float32Array(n * 4));
+  for (const b of order) if (SMAP[b.name]) tracks.set(b.name, new Float32Array(n * 4));
   const pelvisT = new Float32Array(n * 3);
   const parentWorld = new THREE.Quaternion();
   const rootParent = tBones.get('root').parent;
@@ -188,9 +227,9 @@ function retarget(file, spec, mirror) {
       if (b.parent.isBone) parentWorld.copy(worldQ.get(b.parent.name));
       else b.parent.getWorldQuaternion(parentWorld);
       let w;
-      if (MAP[name]) {
-        const s = MAP[name][0];
-        const cur = src(f, s);
+      if (SMAP[name]) {
+        const s = SMAP[name][0];
+        const cur = srcF(i, s);
         const delta = cur.q.clone().multiply(sRest.get(s).q.clone().invert());
         w = delta.multiply(align.get(name)).multiply(tRestQ.get(name));
         const local = parentWorld.clone().invert().multiply(w);
@@ -216,7 +255,7 @@ const io = new NodeIO().registerExtensions(ALL_EXTENSIONS);
 const doc = await io.read(GLB);
 const root = doc.getRoot();
 for (const a of root.listAnimations()) {
-  if (!a.getName().startsWith('mc_')) continue;
+  if (!a.getName().startsWith('mc_') && !a.getName().startsWith('gf_')) continue;
   for (const s of a.listSamplers()) {
     s.getInput()?.dispose();
     s.getOutput()?.dispose();
@@ -228,11 +267,24 @@ for (const a of root.listAnimations()) {
 const nodes = new Map(root.listNodes().map((nd) => [nd.getName(), nd]));
 const buffer = root.listBuffers()[0];
 let total = 0;
-for (const spec of CLIPS) {
-  for (const mirror of spec.mirror ? [false, true] : [false]) {
-    const file = `${dir}/${spec.file}`;
-    const r = retarget(file, spec, mirror);
-    const name = `mc_${spec.name}${mirror ? '_M' : ''}`;
+const jobs = CLIPS.flatMap((spec) =>
+  (spec.mirror ? [false, true] : [false]).map((mirror) => ({ name: `mc_${spec.name}${mirror ? '_M' : ''}`, spec, mirror, source: () => fbxSource(`${dir}/${spec.file}`) })),
+);
+const catalogue = [];
+if (gfDir) {
+  const objFile = `${gfDir}/data/media/objects/players/player.object`;
+  for (const c of gfCatalogue(`${gfDir}/data/media/animations`)) {
+    for (const mirror of [false, true]) {
+      const name = `gf_${c.id}${mirror ? '_M' : ''}`;
+      jobs.push({ name, spec: { headingLock: true, smooth: 0.3 }, mirror, source: () => gfSource(c.file, objFile) });
+      const flip = (a) => (a === null ? null : mirror ? -a : a);
+      catalogue.push({ clip: name, cat: c.cat, speed: c.speed, angle: flip(c.angle), ballAngle: flip(c.ballAngle), touch: c.touch, type: c.type, power: c.power, foot: null });
+    }
+  }
+}
+for (const { name, spec, mirror, source } of jobs) {
+  {
+    const r = retarget(source(), spec, mirror);
     const anim = doc.createAnimation(name);
     const times = new Float32Array(r.n).map((_, i) => i / FPS);
     const inp = doc.createAccessor().setType('SCALAR').setArray(times).setBuffer(buffer);
@@ -247,10 +299,12 @@ for (const spec of CLIPS) {
     anim.addSampler(smp);
     anim.addChannel(doc.createAnimationChannel().setTargetNode(nodes.get('pelvis')).setTargetPath('translation').setSampler(smp));
     total += r.n;
-    console.log(name.padEnd(28), r.duration.toFixed(2) + 's');
+    if (!name.startsWith('gf_')) console.log(name.padEnd(28), r.duration.toFixed(2) + 's');
   }
 }
 if (!dump) {
   await io.write(GLB, doc);
+  if (gfDir) fs.writeFileSync('src/assets/gf-anims.json', JSON.stringify(catalogue));
+  console.log('gf clips', catalogue.length);
   console.log('frames', total, 'size', (fs.statSync(GLB).size / 1e6).toFixed(2), 'MB');
 }

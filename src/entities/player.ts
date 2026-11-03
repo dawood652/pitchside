@@ -40,6 +40,10 @@ export class Player {
   slide = false;
   /** Stronger foot for passes and shots (about one player in five is left-footed). */
   leftFooted = false;
+  /** Direction the current kick sends the ball, relative to facing (radians, + = left). */
+  kickAngle = 0;
+  /** Last ball touch for the animator to show (dribble cut or first touch), consumed by the view. */
+  touchEvent: { kind: 'ballcontrol' | 'trap'; angle: number } | null = null;
   lockout = 0; // can't touch ball until 0
   tackleCooldown = 0;
   stun = 0;

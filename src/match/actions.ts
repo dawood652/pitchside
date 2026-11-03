@@ -54,7 +54,21 @@ export function passTo(s: MatchState, p: Player, receiver: Player | null, kind: 
   const pw = power ?? 0.45;
   const vEnd = (kind === 'through' ? 5 : KICK.passEndSpeed) + (pw - 0.45) * 12;
   const v = kind === 'lob' ? lobPass(from, target, Math.hypot(dx, dz) > 35 ? 0.66 - (pw - 0.5) * 0.2 : 0.58 - (pw - 0.5) * 0.15) : groundPass(from, target, Math.max(2.5, vEnd));
-  p.faceTowards(target.x, target.z);
+  // Pass where you aim without spinning round first: up to ~150° off the body, a side-foot,
+  // outside-of-the-foot or back-heel style pass is played (the animation is picked from the angle)
+  {
+    const ang = Math.atan2(target.x - from.x, target.z - from.z);
+    let rel = ang - p.facing;
+    rel = Math.atan2(Math.sin(rel), Math.cos(rel));
+    if (Math.abs(rel) > 2.6) {
+      p.faceTowards(target.x, target.z);
+      rel = 0;
+    } else {
+      p.facing += rel * 0.35;
+      rel *= 0.65;
+    }
+    p.kickAngle = rel;
+  }
   const dur = kind === 'lob' ? KICK_DUR.lob : KICK_DUR.pass;
   p.startAction(kind === 'lob' ? 'lob' : 'pass', dur, Math.min(1, Math.hypot(v.vx, v.vz) / 28));
   s.pending = { player: p, delay: dur * CONTACT, vel: v, receiver, isShot: false, power: Math.min(1, Math.hypot(v.vx, v.vy, v.vz) / 30), target };
@@ -64,6 +78,7 @@ export type ShotStyle = 'normal' | 'finesse' | 'chip';
 
 export function shootBy(s: MatchState, p: Player, power: number, lateral: number | null, style: ShotStyle = 'normal'): void {
   if (s.owner !== p || s.pending) return;
+  p.kickAngle = 0;
   const dir = s.attackDir[p.team];
   const goalX = dir * PITCH.halfL;
   const from = { x: s.ball.pos.x, z: s.ball.pos.z };

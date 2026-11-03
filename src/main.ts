@@ -14,6 +14,7 @@ import { loadPlayerAsset, PlayerAsset } from './render/playerModel';
 import { BallView } from './render/ballView';
 import { Game } from './match/game';
 import { Replay } from './match/replay';
+import { passTo } from './match/actions';
 import { MATCH, PITCH } from './data/tuning';
 import { Input } from './core/input';
 import { startLoop } from './core/loop';
@@ -430,6 +431,7 @@ startLoop(
   },
   render: () => (post ? post.render(world.scene, world.camera, 1 / 60) : world.renderer.render(world.scene, world.camera)),
   quality,
+  passTo,
   settings,
   applySettings,
   inputMove: () => input.move(),
