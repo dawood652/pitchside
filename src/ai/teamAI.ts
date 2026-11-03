@@ -4,7 +4,8 @@ import { Player } from '../entities/player';
 import { MatchState } from '../match/state';
 import { intercept } from './predict';
 import { passTo, shootBy, tackle, nearestOpponentDist, PassKind } from '../match/actions';
-import { PITCH } from '../data/tuning';
+import { AI, PITCH } from '../data/tuning';
+import { laneMargin } from './lanes';
 import { clamp, distToSegment, V2 } from '../core/vec';
 
 const decisionTimer = new Map<number, number>();
@@ -80,6 +81,21 @@ export function updateTeamAI(s: MatchState, team: 0 | 1, dt: number): void {
     }
   }
 
+  // cover: when pressing, the next-closest defender or midfielder sits between ball and goal
+  let cover: Player | null = null;
+  if (oppHas && s.phase === 'play') {
+    let bd = 25;
+    const presser = chaser ?? human;
+    for (const p of mates) {
+      if (p === presser || p === human || p.role === 'FWD' || p.stun > 0) continue;
+      const d = Math.hypot(p.pos.x - s.ball.pos.x, p.pos.z - s.ball.pos.z);
+      if (d < bd) {
+        bd = d;
+        cover = p;
+      }
+    }
+  }
+
   for (const p of mates) {
     if (p === human) continue;
     if (p.action === 'tackle' || p.action === 'celebrate') continue;
@@ -93,6 +109,16 @@ export function updateTeamAI(s: MatchState, team: 0 | 1, dt: number): void {
     }
     if (p === s.owner) {
       carrier(s, p, dt);
+      continue;
+    }
+    if (p === cover && s.owner) {
+      // second man: goal-side of the presser, ready for the dribble past him
+      const og = { x: -s.attackDir[team] * PITCH.halfL, z: 0 };
+      const dx = og.x - s.owner.pos.x;
+      const dz = og.z - s.owner.pos.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const k = Math.min(AI.coverDepth, d * 0.5) / d;
+      moveTo(p, { x: s.owner.pos.x + dx * k, z: s.owner.pos.z + dz * k }, 6, 1);
       continue;
     }
     if (p === chaser) {
@@ -141,7 +167,10 @@ function press(s: MatchState, p: Player, humanTeam: boolean): void {
   p.sprint = Math.hypot(target.x - p.pos.x, target.z - p.pos.z) > 3;
   const dist = Math.hypot(o.pos.x - p.pos.x, o.pos.z - p.pos.z);
   const diff = s.humanActive && !humanTeam ? [0.7, 1, 1.35][s.difficulty] : 1;
-  const rate = humanTeam ? 0.3 : (0.28 + (p.ratings.defending - 60) / 120) * diff;
+  // GRF-style timing: go in when the ball is away from the carrier's feet (between touches)
+  const loose = Math.hypot(s.ball.pos.x - o.pos.x, s.ball.pos.z - o.pos.z) > 0.75;
+  const timing = loose ? AI.tackleWhenLoose : AI.tackleWhenTight;
+  const rate = (humanTeam ? 0.3 : (0.28 + (p.ratings.defending - 60) / 120) * diff) * timing;
   if (dist < 1.7 && Math.random() < rate * (1 / 60)) {
     p.faceTowards(s.ball.pos.x, s.ball.pos.z);
     tackle(p, dist > 1.1 && Math.random() < 0.35);
@@ -223,11 +252,13 @@ function bestOption(s: MatchState, p: Player, crossing: boolean): { p: Player; s
     if (m.team !== p.team || m === p || m.sentOff) continue;
     const d = Math.hypot(m.pos.x - p.pos.x, m.pos.z - p.pos.z);
     if (d < 5 || d > 42) continue;
-    let open = 99;
-    for (const o of s.players) {
-      if (o.team === p.team) continue;
-      open = Math.min(open, distToSegment(o.pos, p.pos, m.pos));
-    }
+    // time margin along the lane (s): > 0 means the ball beats every defender to every point
+    const opp = s.players.filter((o) => o.team !== p.team && !o.sentOff);
+    const margin = laneMargin(p.pos, m.pos, opp);
+    // in metres-off-the-line terms (2.3 = just about safe); the plain distance still counts, so a
+    // tightly marked receiver stays a poor option
+    const near = Math.min(...opp.map((o) => distToSegment(o.pos, p.pos, m.pos)));
+    const open = Math.min(near, clamp(1.8 + margin * 5, 0, 8));
     const markerD = Math.min(...s.players.filter((o) => o.team !== p.team).map((o) => Math.hypot(o.pos.x - m.pos.x, o.pos.z - m.pos.z)));
     const progress = (m.pos.x - p.pos.x) * dir;
     const inBox = m.pos.x * dir > PITCH.halfL - PITCH.boxDepth && Math.abs(m.pos.z) < PITCH.boxHalfWidth;

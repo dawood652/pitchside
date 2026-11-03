@@ -6,7 +6,8 @@ import { Player } from '../entities/player';
 import { PlayerModel } from '../render/playerModel';
 import { neutralPose, Pose, POSE_KEYS, BASE_HIP } from './pose';
 import * as clips from './clips';
-import { pickGf, GfCat } from './gfSelect';
+import { OneShotChooser } from './oneShot';
+import { FootPlanter } from './footPlant';
 
 const R = new THREE.Vector3(-1, 0, 0); // character right
 const F = new THREE.Vector3(0, 0, 1); // character forward
@@ -43,10 +44,10 @@ export class PlayerAnimator {
   private procW = 0;
   private lookYaw = 0;
   private charQuat = new THREE.Quaternion();
-  // touch animation (dribble cut / first touch) playing outside of a game action
-  private touchClip: { name: string; start: number; left: number } | null = null;
-  // clip picked for the current kick action
-  private kickPick: { action: string; t0: number; name: string; start: number } | null = null;
+  private chooser: OneShotChooser;
+  private planter: FootPlanter;
+  private lastActionT = 0;
+  private fadeIn = 0.12;
 
   constructor(private m: PlayerModel, clipMap: Map<string, THREE.AnimationClip>) {
     this.mixer = new THREE.AnimationMixer(m.model);
@@ -59,70 +60,12 @@ export class PlayerAnimator {
       else a.stop();
       this.actions.set(name, a);
     }
+    this.chooser = new OneShotChooser((n) => this.actions.get(n)?.getClip().duration ?? 0);
+    this.planter = new FootPlanter(m.root, m.bones);
   }
 
   private bone(n: string): THREE.Bone | undefined {
     return this.m.bones.get(n);
-  }
-
-  /**
-   * Pick the clip one-shot (if any) for the player's state. Returns [name, startFraction, timeScale, loop].
-   * mc_* clips are football mocap (see tools/mocap-clips.mjs). Kicks start so the foot meets the ball
-   * exactly when the simulation releases it: start = (key - contactDelay * timeScale) / duration.
-   */
-  private wantedClip(p: Player, ctx: AnimContext): [string, number, number, boolean] | null {
-    switch (p.action) {
-      case 'pass':
-      case 'lob':
-      case 'shot': {
-        // Pick once per kick: the clip whose ball direction and run-up speed fit, started so its
-        // foot contact lands on the simulation's contact moment (CONTACT share of the action)
-        if (!this.kickPick || this.kickPick.action !== p.action || p.actionT < this.kickPick.t0) {
-          const cat: GfCat = p.action === 'shot' ? 'shot' : 'pass';
-          const g = pickGf(cat, p.speed, (p.kickAngle * 180) / Math.PI, p.id);
-          const contactIn = Math.max(0, p.actionDur * 0.3 - p.actionT);
-          if (g) this.kickPick = { action: p.action, t0: p.actionT, name: g.clip, start: Math.max(0, g.touch - contactIn) };
-        }
-        if (this.kickPick) {
-          const d = this.actions.get(this.kickPick.name)?.getClip().duration ?? 1;
-          return [this.kickPick.name, this.kickPick.start / d, 1, false];
-        }
-        return null;
-      }
-      case 'throwin':
-        return ['mc_throwin', 0.36, 1.2, false];
-      case 'tackle':
-        if (!p.slide) return [p.id % 2 ? 'mc_tackle' : 'mc_tackle_M', 0.1, 1.15, false];
-        return p.actionT < 0.66 ? ['Slide_Start', 0, 1.15, false] : ['Slide_Exit', 0, 1.1, false];
-      case 'catch':
-        // high ball: jump-and-catch; low ball: crouch and gather
-        return ctx.ball.y > 1.3 ? ['mc_save1', 0.1, 1.25, false] : ['mc_save3', 0.3, 1.3, false];
-      case 'header':
-        return ['Jump_Start', 0.38, 1.25, false];
-      case 'gkthrow':
-        return ['OverhandThrow', 0.2, 1.4, false];
-      case 'stumble':
-        if (p.actionDur > 1) return p.actionT < 0.8 ? ['Hit_Knockback', 0, 1, false] : ['KipUp', 0, 1.05, false];
-        return ['Hit_Chest', 0, 0.9, false];
-      case 'celebrate': {
-        const v = p.celebrateVariant;
-        if (v === 0) return p.speed < 1.2 ? ['mc_cele1', 0, 1, false] : null;
-        if (v === 1) return p.actionT < 1.2 ? ['JogToFlip', 0, 1, false] : ['mc_cele3', 0, 1, false];
-        if (v === 2) return p.speed < 1.2 ? ['mc_cele2', 0, 1, false] : null;
-        return p.actionT < 1.9 ? ['BackFlip', 0, 1, false] : ['Dance_Loop', 0, 1, true];
-      }
-      default:
-        break;
-    }
-    if (this.touchClip) {
-      const d = this.actions.get(this.touchClip.name)?.getClip().duration ?? 1;
-      return [this.touchClip.name, this.touchClip.start / d, 1, false];
-    }
-    if (ctx.outcome && p.speed < 0.5) {
-      if (ctx.outcome === 'win') return ['Celebration', 0, 1, true];
-      if (ctx.outcome === 'lose') return [p.id % 2 ? 'Idle_Tired_Loop' : 'Idle_No_Loop', 0, 1, true];
-    }
-    return null;
   }
 
   /** Procedural target (absolute pose) or null. */
@@ -149,37 +92,32 @@ export class PlayerAnimator {
   }
 
   update(dt: number, p: Player, holdingOverhead: boolean, ctx: AnimContext, at?: { x: number; z: number; facing: number }): void {
-    // A dribble cut or first touch from the simulation: play the matching touch animation
-    if (p.touchEvent) {
-      const g = pickGf(p.touchEvent.kind, p.speed, (p.touchEvent.angle * 180) / Math.PI, p.id);
-      const d = g ? (this.actions.get(g.clip)?.getClip().duration ?? 0) : 0;
-      if (g && d > 0 && p.action === 'none') {
-        const start = Math.max(0, g.touch - 0.06);
-        this.touchClip = { name: g.clip, start, left: Math.min(d - start, 0.75) };
-      }
-      p.touchEvent = null;
-    }
-    if (this.touchClip) {
-      this.touchClip.left -= dt;
-      if (this.touchClip.left <= 0 || p.action !== 'none') this.touchClip = null;
-    }
-    if (p.action !== 'pass' && p.action !== 'lob' && p.action !== 'shot') this.kickPick = null;
-    const clipWant = this.wantedClip(p, ctx);
+    // A dribble cut, first touch or turn from the simulation: play the matching GRF touch animation
+    if (p.touchEvent) this.chooser.touch(p);
+    this.chooser.tick(dt, p);
+    const clipWant = this.chooser.want(p, ctx);
     const procWant = clipWant ? null : this.wantedProc(p, holdingOverhead);
+    // a new action restarts its clip even when the same clip is picked again
+    const restarted = p.action !== 'none' && p.actionT < this.lastActionT;
+    this.lastActionT = p.actionT;
 
-    // --- One-shot clips with crossfade
-    if (clipWant && clipWant[0] !== this.oneShotName) {
-      if (this.oneShot) this.fading.push({ action: this.oneShot, w: this.oneShotW });
-      const a = this.actions.get(clipWant[0])!;
-      a.reset();
-      a.setLoop(clipWant[3] ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
-      a.clampWhenFinished = true;
-      a.time = clipWant[1] * a.getClip().duration;
-      a.timeScale = clipWant[2];
-      a.play();
-      this.oneShot = a;
-      this.oneShotName = clipWant[0];
-      this.oneShotW = this.fading.length ? 1 : this.oneShotW;
+    // --- One-shot clips with smooth (eased) crossfades
+    if (clipWant && (clipWant.name !== this.oneShotName || restarted)) {
+      const a = this.actions.get(clipWant.name);
+      if (a) {
+        if (this.oneShot) this.fading.push({ action: this.oneShot, w: this.oneShotW });
+        a.reset();
+        a.setLoop(clipWant.loop ? THREE.LoopRepeat : THREE.LoopOnce, Infinity);
+        a.clampWhenFinished = true;
+        a.time = Math.max(0, clipWant.start);
+        a.timeScale = clipWant.scale;
+        a.play();
+        // when cutting from another one-shot keep full weight (the old one fades under it)
+        this.oneShotW = this.oneShot ? 1 : this.oneShotW;
+        this.oneShot = a;
+        this.oneShotName = clipWant.name;
+        this.fadeIn = clipWant.fade;
+      }
     }
     if (!clipWant && this.oneShot) {
       this.fading.push({ action: this.oneShot, w: this.oneShotW });
@@ -187,8 +125,8 @@ export class PlayerAnimator {
       this.oneShotName = '';
       this.oneShotW = 0;
     }
-    if (this.oneShot) this.oneShotW = Math.min(1, this.oneShotW + dt / 0.12);
-    for (const f of this.fading) f.w -= dt / 0.18;
+    if (this.oneShot) this.oneShotW = Math.min(1, this.oneShotW + dt / this.fadeIn);
+    for (const f of this.fading) f.w -= dt / 0.22;
     this.fading = this.fading.filter((f) => {
       if (f.w <= 0) {
         f.action.setEffectiveWeight(0);
@@ -197,8 +135,10 @@ export class PlayerAnimator {
       }
       return true;
     });
-    const fadeSum = this.fading.reduce((s, f) => s + f.w, 0);
-    const clipTotal = Math.min(1, this.oneShotW + fadeSum);
+    const ease = (x: number) => x * x * (3 - 2 * x);
+    const shotW = ease(this.oneShotW);
+    const fadeSum = this.fading.reduce((sum, f) => sum + ease(f.w), 0);
+    const clipTotal = Math.min(1, shotW + fadeSum);
 
     // --- Procedural layer weight
     const procTarget = procWant ? 1 : 0;
@@ -252,8 +192,9 @@ export class PlayerAnimator {
       a.time = n === 'Idle_Loop' ? (a.time + dt) % d : this.phase * d;
       a.setEffectiveWeight(w[n] * locoScale);
     }
-    if (this.oneShot) this.oneShot.setEffectiveWeight(this.oneShotW / Math.max(1, this.oneShotW + fadeSum));
-    for (const f of this.fading) f.action.setEffectiveWeight(f.w / Math.max(1, this.oneShotW + fadeSum));
+    const norm = Math.max(1, shotW + fadeSum);
+    if (this.oneShot) this.oneShot.setEffectiveWeight(shotW / norm);
+    for (const f of this.fading) f.action.setEffectiveWeight(ease(f.w) / norm);
 
     this.mixer.update(dt);
 
@@ -282,6 +223,11 @@ export class PlayerAnimator {
       if (neck) this.rot(neck, U, this.lookYaw * 0.4 * lookW);
       if (head) this.rot(head, U, this.lookYaw * 0.5 * lookW);
     }
+
+    // --- Ground contact: no floating or sinking feet (full fix in locomotion, sinking only in one-shots)
+    const airborne = p.action === 'header' || p.action === 'dive' || p.action === 'tackle' || p.action === 'stumble' || p.action === 'celebrate';
+    const floatFix = airborne ? 0 : (1 - clipTotal) * (1 - this.procW);
+    this.m.model.position.y += this.planter.solve(dt, root, 0, floatFix);
   }
 
   private applyProc(k: number): void {

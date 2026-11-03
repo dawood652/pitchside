@@ -9,6 +9,8 @@ import { MATCH, PITCH } from '../data/tuning';
 import { MatchState, keeperOf } from './state';
 import { decideRestart, Restart } from './rules';
 import { carryBall, looseBall, resolveTackles, separate, setOwner, stealLooseTouch } from './control';
+import { anticipateHeaders, steerAerials } from './aerial';
+import { resolveBlocks, shoulderChallenges, tryBlocks } from './contest';
 import { updatePendingKick, passTo, throwTo, shootBy } from './actions';
 import { updateHuman, autoSwitch, pickReceiver } from './human';
 import { updateTeamAI } from '../ai/teamAI';
@@ -270,6 +272,11 @@ export class Game {
         updateKeeper(s, keeperOf(s, t), dt);
       }
       this.restartAI();
+      if (s.phase === 'play') {
+        anticipateHeaders(s);
+        tryBlocks(s);
+      }
+      steerAerials(s);
     }
 
     // Movement
@@ -297,6 +304,7 @@ export class Game {
     else {
       s.ball.step(dt);
       if (s.phase === 'play') {
+        resolveBlocks(s);
         resolveTackles(s);
         looseBall(s);
       }
@@ -304,6 +312,7 @@ export class Game {
     if (s.phase === 'play' && s.owner) {
       resolveTackles(s);
       stealLooseTouch(s);
+      shoulderChallenges(s, dt);
     }
     separate(s);
     if (s.phase === 'play' && s.owner?.team !== s.humanTeam) autoSwitch(s);

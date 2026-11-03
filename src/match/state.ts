@@ -16,6 +16,7 @@ export type GameEvent =
   | { type: 'post' }
   | { type: 'tackle'; won: boolean }
   | { type: 'header' }
+  | { type: 'block' }
   | { type: 'halftime' }
   | { type: 'fulltime' }
   | { type: 'shot' }

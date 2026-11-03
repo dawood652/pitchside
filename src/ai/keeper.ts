@@ -95,7 +95,7 @@ function react(s: MatchState, gk: Player, goalX: number): void {
     const r = Math.random();
     const guess = humanKeeper ? Math.sign(Math.round(s.diveHint)) : r < 0.42 ? -1 : r < 0.84 ? 1 : 0;
     const shotSide = Math.abs(pz) < 1 ? 0 : Math.sign(pz);
-    willSave = onTarget && guess === shotSide && Math.random() < (shotSide === 0 ? 0.9 : Math.abs(pz) > 2.6 ? 0.35 : 0.72);
+    willSave = onTarget && guess === shotSide && Math.random() < (shotSide === 0 ? 0.9 : Math.abs(pz) > 2.6 ? 0.55 : 0.88);
     s.keeperWillSave = willSave || !onTarget;
     if (guess === 0) {
       gk.startAction('catch', 0.6);
@@ -106,6 +106,7 @@ function react(s: MatchState, gk: Player, goalX: number): void {
     gk.diveDir = Math.sign(guess * leftZp) || 1;
     gk.diveHigh = clamp((py - 0.4) / 1.8, 0, 1);
     gk.startAction('dive', 1.5);
+    gk.cue = { cat: 'deflect', angle: 0, side: gk.diveDir * Math.min(2.6, Math.abs(lateral)), h: py, contact: t };
     const target = willSave ? lateral : guess * 2.4 - gk.pos.z;
     gk.vel = { x: 0, z: clamp(target / Math.max(0.3, t), -7.5, 7.5) };
     gk.desired = { x: gk.vel.x, z: gk.vel.z };
@@ -125,6 +126,7 @@ function react(s: MatchState, gk: Player, goalX: number): void {
   const reachLat = willSave ? lateral : lateral * (0.55 + Math.random() * 0.2);
   const tt = Math.max(0.28, t);
   gk.startAction('dive', 1.5);
+  gk.cue = { cat: 'deflect', angle: 0, side: gk.diveDir * Math.min(2.6, Math.abs(reachLat)), h: py, contact: tt };
   gk.vel = { x: 0, z: clamp(reachLat / tt, -7.5, 7.5) };
   gk.desired = { x: gk.vel.x, z: gk.vel.z };
   void goalX;

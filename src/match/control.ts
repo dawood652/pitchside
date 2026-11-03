@@ -5,6 +5,8 @@ import { MatchState } from './state';
 import { BALL, PITCH, PLAYER } from '../data/tuning';
 import { angleDiff, clamp } from '../core/vec';
 import { judgeTackle, foulRestart } from './rules';
+import { canChest, canHead, header } from './aerial';
+import { tripCue } from './contest';
 
 /** Any touch: calls offside if the flagged receiver touches it, otherwise clears the flag. */
 export function touch(s: MatchState, p: Player): boolean {
@@ -70,7 +72,7 @@ export function carryBall(s: MatchState, dt: number): void {
   const foot = { x: o.pos.x + o.forward.x * 0.3, z: o.pos.z + o.forward.z * 0.3 };
   const dBall = Math.hypot(b.pos.x - foot.x, b.pos.z - foot.z);
   // Ball got away: it's loose now (anyone can win it, including the dribbler)
-  if (dBall > 2.3 || b.pos.y > 1.2) {
+  if (dBall > 2.3 || (b.pos.y > 1.2 && b.vel.y > 0)) {
     s.owner = null;
     return;
   }
@@ -145,10 +147,17 @@ export function firstTouch(s: MatchState, p: Player, wantDir: { x: number; z: nu
     return;
   }
   // Clean touch into the direction asked for
+  const high = b.pos.y > PLAYER.controlMaxBallHeight - 0.25;
   {
     let rel = Math.atan2(dir.x, dir.z) - p.facing;
     rel = Math.atan2(Math.sin(rel), Math.cos(rel));
-    p.touchEvent = { kind: 'trap', angle: rel };
+    p.touchEvent = high ? { kind: 'chest', angle: rel, h: b.pos.y } : { kind: 'trap', angle: rel };
+  }
+  if (high) {
+    // killed on the chest / thigh: the ball drops at the feet, a little ahead
+    b.vel = { x: dir.x * 1.2 + p.vel.x * 0.6, y: -0.5, z: dir.z * 1.2 + p.vel.z * 0.6 };
+    p.touchTimer = 0.45;
+    return;
   }
   // Cushioned touch that sets the ball just ahead of the feet in the direction asked for
   const tx = p.pos.x + dir.x * (0.45 + p.speed * 0.12);
@@ -190,17 +199,17 @@ export function looseBall(s: MatchState): void {
   let bestD = 99;
   for (const p of s.players) {
     if (p.lockout > 0 || p.stun > 0 || p.sentOff) continue;
-    if (p.busy && p.action !== 'tackle' && p.action !== 'dive' && p.action !== 'catch') continue;
+    if (p.busy && p.action !== 'tackle' && p.action !== 'dive' && p.action !== 'catch' && p.action !== 'header') continue;
     const d = Math.hypot(b.pos.x - p.pos.x, b.pos.z - p.pos.z);
     const isGk = p.role === 'GK' && inOwnBox(s, p);
     const radius = isGk ? 1.15 : PLAYER.controlRadius;
     const maxH = isGk ? 2.5 : PLAYER.controlMaxBallHeight;
-    if (d < radius && b.pos.y < maxH && d < bestD) {
+    if (d < radius && (b.pos.y < maxH || (!isGk && canChest(p, s, d))) && d < bestD) {
       best = p;
       bestD = d;
     }
-    // Headers
-    if (!isGk && !p.busy && d < 0.8 && b.pos.y > PLAYER.headerMinHeight && b.pos.y < PLAYER.headerMaxHeight && b.vel.y < 1.5) {
+    // Headers (anticipated ones meet the ball on their contact frame)
+    if (!isGk && canHead(p, s, d) && !canChest(p, s, d)) {
       header(s, p);
       return;
     }
@@ -250,38 +259,6 @@ function parry(s: MatchState, gk: Player): void {
   s.events.push({ type: 'save' });
 }
 
-function header(s: MatchState, p: Player): void {
-  if (touch(s, p)) return;
-  const b = s.ball;
-  const dir = s.attackDir[p.team];
-  const goalX = dir * PITCH.halfL;
-  const relX = p.pos.x * dir;
-  p.startAction('header', 0.55);
-  p.lockout = 0.4;
-  if (relX > 34 && Math.abs(p.pos.z) < 18) {
-    const aimZ = (Math.random() - 0.5) * 2 * (PITCH.goalHalfWidth - 0.4);
-    const dx = goalX - b.pos.x;
-    const dz = aimZ - b.pos.z;
-    const d = Math.hypot(dx, dz);
-    const sp = 12 + Math.random() * 4;
-    const err = (Math.random() - 0.5) * 0.25;
-    b.vel = { x: (dx / d) * sp * Math.cos(err) - (dz / d) * sp * Math.sin(err), y: -1.5 + Math.random() * 2.5, z: (dz / d) * sp * Math.cos(err) + (dx / d) * sp * Math.sin(err) };
-    s.shotSide = Math.sign(dx);
-    s.keeperWillSave = false;
-    s.stats.shots[p.team]++;
-    s.events.push({ type: 'shot' });
-  } else {
-    const away = Math.sign(p.pos.z) || 1;
-    b.vel = { x: dir * (10 + Math.random() * 6), y: 4 + Math.random() * 3, z: away * Math.random() * 5 };
-    s.shotSide = 0;
-  }
-  b.spinY = 0;
-  s.lastTouch = p.team;
-  s.lastToucher = p;
-  s.intendedReceiver = null;
-  s.events.push({ type: 'header' });
-}
-
 /** Resolve tackles ~0.15 s into the slide. */
 export function resolveTackles(s: MatchState): void {
   for (const p of s.players) {
@@ -306,6 +283,7 @@ export function resolveTackles(s: MatchState): void {
         o.holdingBall = false;
         const fall = verdict.foul || Math.random() < 0.55;
         o.startAction('stumble', fall ? 1.95 : 0.55);
+        tripCue(o, p.pos.x, p.pos.z, fall ? (o.speed > 5 ? 3 : 2) : 1);
         o.stun = fall ? 1.9 : 0.55;
         o.lockout = fall ? 1.9 : 0.6;
         s.pending = null;

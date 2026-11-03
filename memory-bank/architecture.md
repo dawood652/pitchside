@@ -54,3 +54,11 @@ Gameplay code never imports three.js (except views), so all logic runs headless 
 - `src/match/control.ts` — `carryBall` (touch dribble), `firstTouch`, `stealLooseTouch`.
 - `src/match/human.ts` — assisted collection, contain, `nextSwitch`/`autoSwitch` modes; consumes `s.tapPass`.
 - State additions: `humanMove`, `assist`, `lastSwitchT`, `nextSwitch`, `time`, `tapPass`; Player `touchTimer`.
+
+## GRF pass 2 (Nov 2026)
+- `src/animation/gfSelect.ts` — catalogue lookup by category, speed class, angle and contact height/side (`pickGf`, `gfCost`). Categories = `AnimCat` in `entities/player.ts`.
+- `src/animation/oneShot.ts` — `OneShotChooser`: which full-body clip to play for the player's action/cue, `alignContact` (contact scheduling). `footPlant.ts` — ground contact correction. `animator.ts` — mixing only (locomotion, one-shots, procedural layer, head look).
+- Player carries `cue: AnimCue` (set by the sim when an action starts: category, angle, contact height/side/time, trip severity) and `touchEvent` (touches, traps, chest, turns).
+- `src/match/aerial.ts` — anticipated headers, chest traps, `header()`. `src/match/contest.ts` — shot blocks, shoulder challenges, trip cues. Both run from `game.ts` each step.
+- `src/ai/lanes.ts` — pass-lane time margin used by `teamAI.bestOption`.
+- Tuning: `MOVE`, `AERIAL`, `CONTEST`, `AI` in `data/tuning.ts`.

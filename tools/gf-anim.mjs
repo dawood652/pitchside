@@ -148,6 +148,36 @@ export function gfSource(file, objectFile) {
   };
 }
 
+/** Change of facing of the body node over the clip, degrees (+ = left), or null. */
+function bodyYaw(tracks) {
+  const t = tracks.find((r) => r[0] === 'body');
+  if (!t) return null;
+  const n = Math.floor((t.length - 1) / 5);
+  const yaw = (k) => {
+    const q = new THREE.Quaternion(+t[k + 1], +t[k + 2], +t[k + 3], +t[k + 4]);
+    const v = new THREE.Vector3(0, -1, 0).applyQuaternion(q);
+    return Math.atan2(v.x, -v.y);
+  };
+  let d = yaw(1 + (n - 1) * 5) - yaw(1);
+  d = Math.atan2(Math.sin(d), Math.cos(d));
+  return Math.round(THREE.MathUtils.radToDeg(d));
+}
+
+/** Category of a .anim (relative path) for the game, or null to leave it out. */
+function classify(rel) {
+  const cat = rel.split('/')[0];
+  if (/bicycle|throw|zidane|showcard/.test(rel)) return null;
+  if (/header/.test(rel)) return 'header';
+  if (cat === 'trap' && /highballs/.test(rel)) return 'chest';
+  if (cat === 'deflect') return 'deflect';
+  if (cat === 'trip') return 'trip';
+  if (cat === 'interfere') return 'interfere';
+  if (cat === 'movement_special') return /stand_up_from_(front|back)\.anim$/.test(rel) ? 'standup' : null;
+  if (cat === 'movement') return /^movement\/(idle\/(090|135|180)_accel|dribble\/(090_decel|135)|sprint\/135_decel_decel_decel|walk\/135_decel)\.anim$/.test(rel) ? 'move' : null;
+  if (/nonbase|highballs/.test(rel)) return null;
+  return ['pass', 'shot', 'ballcontrol', 'trap', 'sliding'].includes(cat) ? cat : null;
+}
+
 /** Which animations to bring in, with their football metadata (angles: + = to the player's left). */
 export function gfCatalogue(animDir) {
   const out = [];
@@ -163,24 +193,28 @@ export function gfCatalogue(animDir) {
   for (const f of out) {
     const rel = path.relative(animDir, f).replace(/\\/g, '/');
     const parts = rel.split('/');
-    const cat = parts[0];
-    if (!['pass', 'shot', 'ballcontrol', 'trap', 'sliding'].includes(cat)) continue;
-    if (/header|bicycle|headerdive|throw|highballs|nonbase|chest/.test(rel)) continue;
-    const speed = parts[1];
+    const cat = classify(rel);
+    if (!cat) continue;
+    const speed = cat === 'trip' ? parts[2] : parts[1];
     if (!['idle', 'dribble', 'walk', 'sprint'].includes(speed)) continue;
     const a = parseAnim(f);
-    if (!a.touch && cat !== 'sliding') continue;
+    if (!a.touch && !['sliding', 'trip', 'standup', 'move'].includes(cat)) continue;
     const base = parts.at(-1).replace('.anim', '');
     const num = base.match(/^D?(\d{3})/);
     let angle = num ? Number(num[1]) : 0;
-    const bd = a.tag('balldirection');
-    let ballAngle = null;
-    if (bd) {
-      const [x, y] = bd.split(',').map(Number);
+    const dirTag = (k) => {
+      const v = a.tag(k);
+      if (!v) return null;
+      const [x, y] = v.split(',').map(Number);
       // GF: +x = player's left, -y = forward
-      ballAngle = Math.round(THREE.MathUtils.radToDeg(Math.atan2(x, -y)));
-    }
+      return Math.round(THREE.MathUtils.radToDeg(Math.atan2(x, -y)));
+    };
+    const ballAngle = dirTag('balldirection');
     if (/_left|left_/.test(base)) angle = -angle;
+    // file names don't say which way: measure the body's change of facing instead (+ = left)
+    const yaw = bodyYaw(a.tracks);
+    if (yaw !== null) angle = yaw;
+    const tp = a.touch?.pos;
     pick.push({
       file: f,
       id: rel.replace('.anim', '').replace(/[^a-zA-Z0-9]+/g, '_'),
@@ -191,6 +225,13 @@ export function gfCatalogue(animDir) {
       touch: a.touch ? a.touch.frame / ANIM_FPS : null,
       type: a.tag('type'),
       power: a.tag('touch_maxpowerfactor') ? Number(a.tag('touch_maxpowerfactor')) : null,
+      // contact point relative to the body: height, side (+ left), forward (metres)
+      h: tp ? +tp[2].toFixed(2) : null,
+      side: tp ? +tp[0].toFixed(2) : null,
+      fwd: tp ? +(-tp[1]).toFixed(2) : null,
+      bump: dirTag('bumpdirection'), // trips: direction of the push (+ left)
+      trip: a.tag('triptype') ? Number(a.tag('triptype')) : null,
+      lay: a.tag('outgoing_special_state'), // ends lying (lay_front / lay_back)
     });
   }
   return pick;

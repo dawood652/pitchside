@@ -278,7 +278,12 @@ if (gfDir) {
       const name = `gf_${c.id}${mirror ? '_M' : ''}`;
       jobs.push({ name, spec: { headingLock: true, smooth: 0.3 }, mirror, source: () => gfSource(c.file, objFile) });
       const flip = (a) => (a === null ? null : mirror ? -a : a);
-      catalogue.push({ clip: name, cat: c.cat, speed: c.speed, angle: flip(c.angle), ballAngle: flip(c.ballAngle), touch: c.touch, type: c.type, power: c.power, foot: null });
+      const e = { clip: name, cat: c.cat, speed: c.speed, angle: flip(c.angle), ballAngle: flip(c.ballAngle), touch: c.touch, type: c.type, power: c.power };
+      if (c.h !== null) Object.assign(e, { h: c.h, side: flip(c.side), fwd: c.fwd });
+      if (c.bump !== null) e.bump = flip(c.bump);
+      if (c.trip !== null) e.trip = c.trip;
+      if (c.lay) e.lay = c.lay;
+      catalogue.push(e);
     }
   }
 }
@@ -289,7 +294,10 @@ for (const { name, spec, mirror, source } of jobs) {
     const times = new Float32Array(r.n).map((_, i) => i / FPS);
     const inp = doc.createAccessor().setType('SCALAR').setArray(times).setBuffer(buffer);
     for (const [bone, arr] of r.tracks) {
-      const out = doc.createAccessor().setType('VEC4').setArray(arr).setBuffer(buffer);
+      // rotations stored as normalized int16 (glTF core allows it; three's loader dequantizes): half the size
+      const qa = new Int16Array(arr.length);
+      for (let i = 0; i < arr.length; i++) qa[i] = Math.round(Math.max(-1, Math.min(1, arr[i])) * 32767);
+      const out = doc.createAccessor().setType('VEC4').setArray(qa).setNormalized(true).setBuffer(buffer);
       const smp = doc.createAnimationSampler().setInput(inp).setOutput(out).setInterpolation('LINEAR');
       anim.addSampler(smp);
       anim.addChannel(doc.createAnimationChannel().setTargetNode(nodes.get(bone)).setTargetPath('rotation').setSampler(smp));

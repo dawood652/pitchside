@@ -14,7 +14,9 @@ export type ActionKind =
   | 'catch'
   | 'throwin'
   | 'gkthrow'
-  | 'stumble';
+  | 'stumble'
+  | 'block'
+  | 'challenge';
 
 /** Idle → jog → sprint blend driven by speed (m/s) and stride phase (radians). */
 export function locomotion(speed: number, phase: number, keeperReady: boolean, t: number): Pose {

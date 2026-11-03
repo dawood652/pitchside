@@ -2,7 +2,7 @@
 
 import { ActionKind } from '../animation/clips';
 import { Role, Slot } from '../data/formations';
-import { PLAYER } from '../data/tuning';
+import { MOVE, PLAYER } from '../data/tuning';
 import { angleDiff, V2 } from '../core/vec';
 
 export interface Ratings {
@@ -12,6 +12,19 @@ export interface Ratings {
   dribbling: number;
   defending: number;
   keeping: number;
+}
+
+/** Animation families the simulation can ask for (see animation/gfSelect.ts). */
+export type AnimCat = 'pass' | 'shot' | 'ballcontrol' | 'trap' | 'sliding' | 'header' | 'chest' | 'deflect' | 'trip' | 'interfere' | 'standup' | 'move';
+
+/** Animation request for an action: family, direction, where the ball meets the body and when. */
+export interface AnimCue {
+  cat: AnimCat;
+  angle: number; // degrees relative to facing, + = left (ball out / bump from)
+  h?: number; // contact height (m)
+  side?: number; // contact to the side (m, + = left)
+  contact?: number; // seconds after the action starts when the ball is touched
+  severity?: number; // trips: 1 stumble, 2 fall, 3 heavy fall
 }
 
 export class Player {
@@ -43,7 +56,14 @@ export class Player {
   /** Direction the current kick sends the ball, relative to facing (radians, + = left). */
   kickAngle = 0;
   /** Last ball touch for the animator to show (dribble cut or first touch), consumed by the view. */
-  touchEvent: { kind: 'ballcontrol' | 'trap'; angle: number } | null = null;
+  touchEvent: { kind: AnimCat; angle: number; h?: number } | null = null;
+  /** What the current action's animation should show (set when the action starts; read by the view). */
+  cue: AnimCue | null = null;
+  /** Committed to a header: where the ball will be met. */
+  aerialTarget: V2 | null = null;
+  /** A block in progress will get a touch on the ball. */
+  blockOk = false;
+  private turnCd = 0;
   lockout = 0; // can't touch ball until 0
   tackleCooldown = 0;
   stun = 0;
@@ -93,6 +113,7 @@ export class Player {
     this.actionT = 0;
     this.actionDur = dur;
     this.actionPower = power;
+    this.cue = null;
   }
 
   /** Integrate movement toward desired velocity with acceleration and turn-rate limits. */
@@ -100,6 +121,7 @@ export class Player {
     this.lockout = Math.max(0, this.lockout - dt);
     this.tackleCooldown = Math.max(0, this.tackleCooldown - dt);
     this.stun = Math.max(0, this.stun - dt);
+    this.turnCd = Math.max(0, this.turnCd - dt);
     if (this.action !== 'none') {
       this.actionT += dt;
       if (this.actionT >= this.actionDur && this.action !== 'celebrate') this.action = 'none';
@@ -112,28 +134,39 @@ export class Player {
     }
     let dx = this.desired.x;
     let dz = this.desired.z;
+    // Turning from (nearly) standing: show a GRF turn-on-the-spot step (movement clips)
+    if (!withBall && this.action === 'none' && this.turnCd <= 0 && this.speed < 2.5 && Math.hypot(dx, dz) > 2 && !this.touchEvent) {
+      const turn = angleDiff(this.facing, Math.atan2(dx, dz));
+      if (Math.abs(turn) > 1.4) {
+        this.touchEvent = { kind: 'move', angle: turn };
+        this.turnCd = 0.7;
+      }
+    }
     const max = this.maxSpeed(withBall) * (this.stun > 0 ? 0.35 : 1);
     const dl = Math.hypot(dx, dz);
     if (dl > max) {
       dx = (dx / dl) * max;
       dz = (dz / dl) * max;
     }
-    const lockMove = this.action === 'pass' || this.action === 'shot' || this.action === 'lob' || this.action === 'throwin' || this.action === 'gkthrow' || this.action === 'catch';
+    const lockMove = this.action === 'pass' || this.action === 'shot' || this.action === 'lob' || this.action === 'throwin' || this.action === 'gkthrow' || this.action === 'catch' || this.action === 'block';
     if (lockMove) {
       dx *= 0.2;
       dz *= 0.2;
     }
-    const ax = dx - this.vel.x;
-    const az = dz - this.vel.z;
-    const al = Math.hypot(ax, az);
-    const maxA = PLAYER.accel * dt;
-    if (al > maxA) {
-      this.vel.x += (ax / al) * maxA;
-      this.vel.z += (az / al) * maxA;
-    } else {
-      this.vel.x = dx;
-      this.vel.z = dz;
-    }
+    if (this.action === 'dive' || this.action === 'tackle' || this.action === 'stumble' || this.action === 'catch') {
+      // scripted motion: plain acceleration toward the wanted velocity
+      const ax = dx - this.vel.x;
+      const az = dz - this.vel.z;
+      const al = Math.hypot(ax, az);
+      const maxA = PLAYER.accel * dt;
+      if (al > maxA) {
+        this.vel.x += (ax / al) * maxA;
+        this.vel.z += (az / al) * maxA;
+      } else {
+        this.vel.x = dx;
+        this.vel.z = dz;
+      }
+    } else this.steer(dx, dz, max, withBall, dt);
     this.pos.x += this.vel.x * dt;
     this.pos.z += this.vel.z * dt;
     // Face movement direction (unless in a locked action)
@@ -144,6 +177,39 @@ export class Player {
       const maxTurn = PLAYER.turnRate * dt * (withBall ? 0.8 : 1);
       this.facing += Math.max(-maxTurn, Math.min(maxTurn, d));
     }
+  }
+
+  /**
+   * GRF-style movement (humanoidbase.cpp): acceleration falls off toward top speed, braking is
+   * quicker than speeding up, and the run direction turns at a limited rate that shrinks with speed
+   * (π rad/s at sprint with the ball, 1.5π without); asking for more than that bleeds speed first.
+   */
+  private steer(dx: number, dz: number, max: number, withBall: boolean, dt: number): void {
+    const cur = this.speed;
+    const want = Math.min(Math.hypot(dx, dz), max);
+    const heading = cur > 0.05 ? Math.atan2(this.vel.x, this.vel.z) : this.facing;
+    const target = want > 0.05 ? Math.atan2(dx, dz) : heading;
+    let speedT = want;
+    let h = target;
+    if (cur > MOVE.cornerMinSpeed && want > 0.05) {
+      const agility = Math.max(0, Math.min(1, (this.ratings.pace - 60) / 35));
+      const ang = angleDiff(heading, target);
+      const maxAng = (MOVE.cornerRate * (0.7 + 0.3 * agility) * (withBall ? 1 : MOVE.cornerNoBall) * dt) / (cur / MOVE.refSprint + 0.01);
+      if (Math.abs(ang) > maxAng) {
+        h = heading + Math.sign(ang) * maxAng;
+        const over = Math.abs(ang) - maxAng;
+        speedT = Math.min(speedT, cur * (1 - Math.min(1, (over / Math.PI) * MOVE.cornerBrake)));
+      }
+    }
+    let sp = cur;
+    if (speedT > cur) {
+      const top = Math.max(max, MOVE.cornerMinSpeed + 0.1);
+      const x = Math.max(0, Math.min(1, (cur - MOVE.cornerMinSpeed) / (top - MOVE.cornerMinSpeed)));
+      const a = MOVE.accel * Math.max(MOVE.accelFloor, 1 - x ** MOVE.accelFalloffExp);
+      sp = Math.min(speedT, cur + a * dt);
+    } else sp = Math.max(speedT, cur - MOVE.decel * dt);
+    this.vel.x = Math.sin(h) * sp;
+    this.vel.z = Math.cos(h) * sp;
   }
 
   faceTowards(x: number, z: number): void {
