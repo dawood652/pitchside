@@ -2,8 +2,10 @@
 // Batting: shot chosen from the tap + the ball's length, bat swung on an arc through the ball,
 // continuous bat-ball collision. Then fielders try to stop it or catch it.
 import Phaser from 'phaser';
-import { aimedSwing, BallSample, BatPose, bowl, Contact, Delivery, findContact, Flight, fly, hitsStumps, makeDelivery, sampleAt, Swing, timeAtZ } from './batting/physics';
-import { chooseShot, Shot } from './batting/shots';
+import { BallSample, BatPose, bowl, Contact, Delivery, findContact, Flight, fly, hitsStumps, makeDelivery, sampleAt, Swing, timeAtZ } from './batting/physics';
+import { Shot } from './batting/shots';
+import { Band, idealTap, planShot } from './batting/plan';
+import { BAT } from './batting/tuning';
 import { batter, Skeleton } from './batting/body';
 import { Cam, drawBall, drawBatter, drawBoundary, drawBowler, drawFielder, drawGround, drawStumps, VH, VW } from './render';
 import { lerp, v, V } from './batting/vec';
@@ -11,10 +13,10 @@ import { field, FIELD, fielderPos, FieldResult } from './fielding';
 import { Ad, DEFAULT_ADS, loadAds } from './ads';
 import { audioStart, setMusic, sfx, startAmbience } from './audio';
 
-const LEAD = 0.17; // tap -> bat on the ball (the downswing)
+const LEAD = BAT.LEAD; // tap -> bat on the ball (the downswing)
 const RUNUP = 1.3;
-const PERFECT = 0.035;
-const GOOD = 0.08;
+const PERFECT = BAT.PERFECT;
+const GOOD = BAT.GOOD;
 const TEAMS = [
   { name: 'Indus Tigers', kit: 0x0f8a4c },
   { name: 'Thames Royals', kit: 0x1d4ed8 },
@@ -56,7 +58,7 @@ class Game extends Phaser.Scene {
   private swing: Swing | null = null;
   private shot: Shot | null = null;
   private tapT: number | null = null;
-  private band: 'PERFECT' | 'Good' | 'Off' = 'Off';
+  private band: Band = 'Off';
   private lofted = false;
   private prevPose: BatPose | null = null;
   private contact: Contact | null = null;
@@ -173,7 +175,7 @@ class Game extends Phaser.Scene {
     this.d = makeDelivery(this.r, [0.9, 1, 1.12][this.m.diff]);
     this.path = bowl(this.d);
     this.T = timeAtZ(this.path, 1.2);
-    this.tIdeal = timeAtZ(this.path, ['short', 'bouncer'].includes(this.d.length) ? 1.05 : 1.95) - LEAD;
+    this.tIdeal = idealTap(this.d, this.path);
     this.swing = this.shot = this.contact = this.flight = this.fres = null;
     this.behind = null;
     this.tapT = null;
@@ -196,26 +198,26 @@ class Game extends Phaser.Scene {
     if (this.phase !== 'ball' || this.tapT !== null || bt < 0.05 || bt > this.T + 0.05) return;
     const aim = Math.atan2(target.x, target.z);
     const dist = Math.hypot(target.x, target.z);
-    const shot = chooseShot(aim, dist, dist > 64, this.d.length);
-    const tC = timeAtZ(this.path, shot.contactZ);
-    this.swing = aimedSwing(shot, sampleAt(this.path, tC).p, bt, LEAD, this.path, tC);
+    const plan = planShot(aim, dist, dist > 64, this.d, this.path, bt, this.r);
+    const shot = plan.shot;
+    this.swing = plan.swing;
     this.shot = shot;
     this.tapT = bt;
     this.prevPose = this.skel?.bat ?? null;
     this.target = target;
-    const err = bt - (tC - LEAD);
-    const ms = Math.round(err * 1000);
-    const band: 'PERFECT' | 'Good' | 'Off' = Math.abs(err) <= PERFECT ? 'PERFECT' : Math.abs(err) <= GOOD ? 'Good' : 'Off';
+    const ms = Math.round(plan.err * 1000);
+    const band = plan.band;
     this.band = band;
-    this.lofted = dist > 64;
-    this.texts.timing.setText(`${band} · ${ms === 0 ? 'on time' : ms < 0 ? `${-ms} ms early` : `${ms} ms late`}`).setColor(band === 'PERFECT' ? '#7CFC8A' : band === 'Good' ? '#ffd166' : '#ff7b7b');
+    this.lofted = plan.lofted;
+    const label = band === 'Miss' ? (Math.abs(plan.err) <= BAT.WINDOW ? 'Out of reach' : ms < 0 ? 'Way too early' : 'Way too late') : band;
+    this.texts.timing.setText(`${label} · ${ms === 0 ? 'on time' : ms < 0 ? `${-ms} ms early` : `${ms} ms late`}`).setColor(band === 'PERFECT' ? '#7CFC8A' : band === 'Good' ? '#ffd166' : '#ff7b7b');
     this.texts.shot.setText(shot.name.toUpperCase()).setColor('#ffd166');
   }
 
   /** Timing pays: perfect + lofted = six, perfect along the ground = four, good = four in the air. */
   private reward(c: Contact): Flight {
     let f = fly(c.p, c.out);
-    if (this.band === 'Off' || c.quality === 'edge') return f;
+    if (this.band === 'Off' || this.band === 'Miss' || c.quality === 'edge') return f;
     const want = this.band === 'PERFECT' && this.lofted ? 6 : 4;
     let out = { ...c.out };
     if (want === 6 && out.y < 9) out.y = 9; // get it up
@@ -279,7 +281,7 @@ class Game extends Phaser.Scene {
         if (c.quality === 'edge') sfx.edge();
         // thin edge going back toward the keeper and slips
         if (c.quality === 'edge' && c.out.z < 2 && this.flight.maxH < 2.2) this.behind = this.r() < 0.6;
-        else this.fres = this.flight.boundary && this.band !== 'Off' ? this.boundaryResult(this.flight) : field(this.flight, this.r);
+        else this.fres = this.flight.boundary && (this.band === 'PERFECT' || this.band === 'Good') ? this.boundaryResult(this.flight) : field(this.flight, this.r);
         const kmh = Math.round(Math.hypot(c.out.x, c.out.y, c.out.z) * 3.6);
         const q = { middle: 'Middled', toe: 'Off the toe', splice: 'Off the splice', edge: 'Edged' }[c.quality];
         this.texts.detail.setText(`${q} · ${kmh} km/h off the bat`);
@@ -398,13 +400,15 @@ class Game extends Phaser.Scene {
     const w = 420;
     const x0 = VW / 2 - w / 2;
     const y = VH - 46;
-    const span = 0.7;
+    const span = 0.45;
     const t0 = this.tIdeal - span / 2;
     const X = (t: number) => x0 + Math.max(0, Math.min(1, (t - t0) / span)) * w;
     u.fillStyle(0x000000, 0.55);
     u.fillRoundedRect(x0 - 6, y - 10, w + 12, 20, 8);
-    u.fillStyle(0xff6b6b, 0.85);
+    u.fillStyle(0x555555, 0.9); // too early / too late: miss
     u.fillRect(x0, y - 6, w, 12);
+    u.fillStyle(0xff6b6b, 0.95); // in reach but mistimed: 1-2 runs
+    u.fillRect(X(this.tIdeal - BAT.WINDOW), y - 6, X(this.tIdeal + BAT.WINDOW) - X(this.tIdeal - BAT.WINDOW), 12);
     u.fillStyle(0xffd166, 1);
     u.fillRect(X(this.tIdeal - GOOD), y - 6, X(this.tIdeal + GOOD) - X(this.tIdeal - GOOD), 12);
     u.fillStyle(0x7cfc8a, 1);

@@ -99,14 +99,19 @@ export interface Swing {
 }
 
 /** Build the swing: contact pose at the ball, then an arc around a pivot near the top hand. */
-export function makeSwing(shot: Shot, contact: V, tTap: number, lead: number): Swing {
+export interface SwingOpts {
+  along?: number; // where on the blade the ball is met, relative to the sweet spot (+ = toward the toe)
+  across?: number; // sideways offset of the ball from the blade's centre line (edges)
+}
+
+export function makeSwing(shot: Shot, contact: V, tTap: number, lead: number, o: SwingOpts = {}): Swing {
   const aim = dirOf(shot.aim);
   const n = norm(add(mul(aim, Math.cos(shot.loft)), mul(UP, Math.sin(shot.loft))));
   let d: V;
   if (shot.plane === 'vertical') d = ortho(add(mul(UP, -1), mul(aim, -0.28)), n);
   else if (shot.plane === 'horizontal') d = ortho(add(v(0, -0.35, 0.9), mul(aim, -0.2)), n);
   else d = ortho(add(v(0, -0.8, 0.5), mul(aim, -0.25)), n);
-  const h = sub(sub(contact, mul(d, SWEET)), mul(n, BALL_R + 0.022));
+  const h = add(sub(sub(contact, mul(d, SWEET + (o.along ?? 0))), mul(n, BALL_R + 0.022)), mul(norm(cross(n, d)), -(o.across ?? 0)));
   // the arc swings around the front (top-hand) shoulder: up and back along the handle from the hands
   let pivot = add(add(add(h, mul(d, -0.22)), mul(UP, 0.36)), mul(aim, -0.12));
   // a real shoulder stays between waist-high and head-high, within an arm's length of the hands
@@ -151,6 +156,9 @@ export function swingPose(s: Swing, t: number): BatPose {
   h = rotAbout(h, c, UP, yaw);
   d = rotDir(d, UP, yaw);
   n = rotDir(n, UP, yaw);
+  // never dig the toe into the ground: lift the whole bat if the arc would take it under the pitch
+  const tipY = h.y + d.y * BAT_LEN;
+  if (tipY < 0.015 && Math.abs(t - (s.tTap + s.lead)) > 0.03) h = add(h, v(0, 0.015 - tipY, 0)); // not at the moment of contact
   return { h, d, n };
 }
 
@@ -269,12 +277,12 @@ export function hitsStumps(path: BallSample[], from: number): boolean {
  * middled contact actually travels toward the chosen direction (corrects for the incoming ball and
  * the bat's own movement). Two quick correction passes.
  */
-export function aimedSwing(shot: Shot, contact: V, tTap: number, lead: number, path: BallSample[], tIdeal: number): Swing {
+export function aimedSwing(shot: Shot, contact: V, tTap: number, lead: number, path: BallSample[], tIdeal: number, o: SwingOpts = {}): Swing {
   const want = shot.aim;
   let aim = want;
-  let sw = makeSwing({ ...shot, aim }, contact, tTap, lead);
+  let sw = makeSwing({ ...shot, aim }, contact, tTap, lead, o);
   for (let k = 0; k < 3; k++) {
-    const ideal = makeSwing({ ...shot, aim }, contact, tIdeal - lead, lead);
+    const ideal = makeSwing({ ...shot, aim }, contact, tIdeal - lead, lead, o);
     const c = findContact(ideal, path, tIdeal - lead, tIdeal + 0.25);
     if (!c) break;
     const got = Math.atan2(c.out.x, c.out.z);
@@ -283,6 +291,6 @@ export function aimedSwing(shot: Shot, contact: V, tTap: number, lead: number, p
     if (Math.abs(err) < 0.02) break;
     aim += err * 0.9;
   }
-  sw = makeSwing({ ...shot, aim }, contact, tTap, lead);
+  sw = makeSwing({ ...shot, aim }, contact, tTap, lead, o);
   return sw;
 }

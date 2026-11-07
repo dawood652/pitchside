@@ -159,6 +159,15 @@ export function batter(st: BatterState): Skeleton {
   const kneePole = v(1, 0.1, 0.25); // knees bend toward the off side (the way he faces)
   const legL = ik2(hipL, aL, LIMB.thigh, LIMB.shin, kneePole);
   const legR = ik2(hipR, aR, LIMB.thigh, LIMB.shin, kneePole);
+  // keep the blade from passing through a knee: nudge the knee clear of the bat
+  for (const leg of [legL, legR]) {
+    for (const a of [0.4, 0.6, 0.8]) {
+      const b = add(bat.h, mul(bat.d, a));
+      const away = sub(leg.mid, b);
+      const dd = Math.hypot(away.x, away.y, away.z);
+      if (dd < 0.13) leg.mid = add(leg.mid, mul(dd > 1e-4 ? norm(away) : v(1, 0, 0), 0.13 - dd));
+    }
+  }
   const toeOut = v(0.24, 0, 0.04);
   return {
     head,
