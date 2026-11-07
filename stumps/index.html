@@ -9,7 +9,9 @@
 <title>Stumps</title>
 <style>
   html, body { margin: 0; height: 100%; background: #0d1b12; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
-  #app { position: fixed; inset: 0; }
+  #world { position: fixed; inset: 0; z-index: 0; }
+  #world canvas { z-index: 0; }
+  #app { position: fixed; inset: 0; z-index: 1; }
   #ui { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; background: rgba(5,15,9,.72); overflow: auto; padding: 12px; box-sizing: border-box; }
   #ui[hidden] { display: none; }
   .card { background: #10261a; border: 2px solid #2e6b45; border-radius: 16px; padding: 16px 22px; color: #f6f3ea; font: 600 15px system-ui, sans-serif; text-align: center; max-width: 560px; }
@@ -27,6 +29,7 @@
 </style>
 </head>
 <body>
+<div id="world"></div>
 <div id="app"></div>
 <div id="ui" hidden></div>
 <button id="music">♪ On</button>

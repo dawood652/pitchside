@@ -7,7 +7,8 @@ import { Shot } from './batting/shots';
 import { Band, idealTap, planShot } from './batting/plan';
 import { BAT } from './batting/tuning';
 import { batter, Skeleton } from './batting/body';
-import { Cam, drawBall, drawBatter, drawBoundary, drawBowler, drawFielder, drawGround, drawStumps, VH, VW } from './render';
+import { Cam, VH, VW } from './render';
+import { World3D } from './render3d/world3d';
 import { lerp, v, V } from './batting/vec';
 import { field, FIELD, fielderPos, FieldResult } from './fielding';
 import { Ad, DEFAULT_ADS, loadAds } from './ads';
@@ -71,7 +72,8 @@ class Game extends Phaser.Scene {
   private skel!: Skeleton;
   private m: Match = { team: 0, opp: 1, overs: 2, diff: 1, target: 0, runs: 0, wkts: 0, maxW: 3, balls: 0, last: [] };
   private texts: Record<string, Phaser.GameObjects.Text> = {};
-  private boards: Phaser.GameObjects.Text[] = [];
+  private world: World3D | null = null;
+  private lastRect = '';
   private ads: Ad[] = DEFAULT_ADS;
   private r = Math.random;
   private padPrev: boolean[] = [];
@@ -82,8 +84,6 @@ class Game extends Phaser.Scene {
     this.ui = this.add.graphics();
     this.cam.update();
     const style = (size: number, color = '#ffffff') => ({ fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: `${size}px`, color, fontStyle: '800', stroke: '#000000', strokeThickness: 4 });
-    // big billboards across the top of the stands (sold via ads.json)
-    for (let i = 0; i < 2; i++) this.boards.push(this.add.text(0, 0, '', { fontFamily: 'system-ui, sans-serif', fontSize: '15px', fontStyle: '900', color: '#ffffff', align: 'center', padding: { x: 10, y: 5 } }).setOrigin(0.5));
     this.texts.score = this.add.text(16, 12, '', style(22));
     this.texts.need = this.add.text(16, 42, '', style(16, '#ffd166'));
     this.texts.last = this.add.text(16, 66, '', style(15));
@@ -97,7 +97,16 @@ class Game extends Phaser.Scene {
     kb.on('keydown-SPACE', () => this.tap(this.aimFromKeys()));
     kb.on('keydown-ENTER', () => (overlay.querySelector('#go, #again') as HTMLButtonElement | null)?.click());
     (window as unknown as { __scene: unknown }).__scene = this; // test hook
-    loadAds().then((a) => (this.ads = a));
+    const canvas = this.game.canvas;
+    World3D.create(document.getElementById('world')!, () => canvas.getBoundingClientRect()).then((w) => {
+      this.world = w;
+      w.setAds(this.ads);
+      loadAds().then((a) => {
+        this.ads = a;
+        w.setAds(a);
+      });
+      w.setTeams(TEAMS[this.m.team].kit, TEAMS[this.m.opp].kit);
+    });
     this.d = makeDelivery(this.r);
     this.path = bowl(this.d);
     this.T = timeAtZ(this.path, 1.2);
@@ -134,6 +143,7 @@ class Game extends Phaser.Scene {
   }
 
   private start(): void {
+    this.world?.setTeams(TEAMS[this.m.team].kit, TEAMS[this.m.opp].kit);
     audioStart();
     startAmbience();
     setMusic(musicOn);
@@ -182,8 +192,8 @@ class Game extends Phaser.Scene {
     this.prevPose = null;
     this.target = null;
     this.bowled = this.settled = false;
-    this.cam.pos = v(0.5, 2.05, -2.5);
-    this.cam.look = v(0, 0.65, 9);
+    this.cam.pos = v(-0.9, 3.9, -7.4);
+    this.cam.look = v(0, -0.6, 14);
     this.cam.update();
     for (const k of ['shot', 'detail', 'timing']) this.texts[k].setText('');
   }
@@ -267,6 +277,12 @@ class Game extends Phaser.Scene {
     const dt = Math.min(0.05, deltaMs / 1000);
     this.t += dt;
     this.pollPad();
+    const rc = this.game.canvas.getBoundingClientRect();
+    const key = `${rc.left},${rc.top},${rc.width},${rc.height}`;
+    if (key !== this.lastRect && this.world) {
+      this.lastRect = key;
+      this.world.resize();
+    }
     if (this.phase === 'runup' && this.t >= RUNUP) {
       this.phase = 'ball';
       this.t = 0;
@@ -320,7 +336,7 @@ class Game extends Phaser.Scene {
     }
     const tb = this.phase === 'menu' || this.phase === 'over' ? -2 : bt === 99 ? Math.min(this.T + 1.2, (this.contact?.t ?? this.T) + 0.8) : bt;
     this.skel = batter({ delivery: this.phase === 'runup' && this.t < 0.1 ? null : this.d, path: this.path, t: tb, T: this.T, swing: this.swing, prevPose: this.prevPose, tapT: this.tapT });
-    this.draw(bt);
+    this.draw(bt, dt);
   }
 
   private ballPos(bt: number): V | null {
@@ -337,32 +353,19 @@ class Game extends Phaser.Scene {
     return null;
   }
 
-  private draw(bt: number): void {
+  private draw(bt: number, dt: number): void {
     const g = this.g;
     const c = this.cam;
-    const kitBowl = TEAMS[this.m.opp].kit;
     g.clear();
-    drawGround(g, c);
-    drawBoundary(g, c, this.ads);
-    this.placeBoards();
-    drawStumps(g, c, 20.12);
     const bz = this.phase === 'runup' ? 20.12 + 9 * (1 - this.t / RUNUP) + 0.6 : 20.12 + 0.6 - Math.min(2, Math.max(0, bt) * 3);
-    const arm = this.phase === 'runup' ? Math.max(0, (this.t - RUNUP + 0.35) / 0.35) : 1 + Math.min(0.4, Math.max(0, bt) * 1.5);
-    drawBowler(g, c, bz, this.phase === 'runup' ? this.t * 2.3 : 0.25, arm);
     const ft = this.contact ? (this.phase === 'result' ? Math.min(this.fres?.t ?? 1, 4) + this.t : bt - this.contact.t) : 0;
     const ball = this.phase === 'runup' || this.phase === 'menu' || this.phase === 'over' ? null : this.ballPos(this.phase === 'result' && this.contact ? this.contact.t + ft : bt);
-    // fielders, far ones first
-    const order = FIELD.map((_, k) => k).sort((a, b) => FIELD[b].home.z - FIELD[a].home.z);
-    for (const k of order) {
-      const p = fielderPos(k, this.contact ? this.fres : null, ft, ball);
-      const catching = this.fres?.fielder === k && this.fres.kind !== 'stopped' && Math.abs(ft - this.fres.t) < 0.5;
-      drawFielder(g, c, p, ball ?? v(0, 0, 0), this.contact && this.fres && ft > 0.35 ? ft : 0, kitBowl, catching);
+    if (this.world) {
+      const fielders = FIELD.map((_, k) => fielderPos(k, this.contact ? this.fres : null, ft, ball));
+      const bphase = this.phase === 'runup' ? (this.t < RUNUP - 0.45 ? 'run' : 'bowl') : this.phase === 'ball' && bt < 0.5 ? 'bowl' : this.phase === 'menu' || this.phase === 'over' ? 'idle' : 'follow';
+      const look = this.phase === 'runup' ? v(0.4, 2, bz) : ball;
+      this.world.frame(c, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(0.75, 0, -2.3), bowler: { z: bz, phase: bphase }, bowled: this.bowled && this.phase === 'result' }, dt);
     }
-    const ballBehind = ball && ball.z > this.skel.pelvis.z;
-    if (ball && ballBehind) drawBall(g, c, ball);
-    drawStumps(g, c, 0, this.bowled ? Math.min(1, this.t * 5 + 0.2) : 0);
-    drawBatter(g, c, this.skel);
-    if (ball && !ballBehind) drawBall(g, c, ball);
     if (this.target && !this.contact) {
       const p = c.p(v(this.target.x, 0, Math.min(this.target.z, 120)));
       g.lineStyle(3, 0xffd166, 0.9);
@@ -376,21 +379,6 @@ class Game extends Phaser.Scene {
     this.texts.score.setText(show ? `${TEAMS[m.team].name.split(' ')[0].toUpperCase()}  ${m.runs}/${m.wkts}  (${Math.floor(m.balls / 6)}.${m.balls % 6} ov)` : '');
     this.texts.need.setText(show && m.target ? (m.runs >= m.target ? 'Target reached' : `Need ${m.target - m.runs} from ${m.overs * 6 - m.balls}`) : '');
     this.texts.last.setText(show ? m.last.join('  ') : '');
-  }
-
-  /** Billboards on the stand roof, in the batting view (each shows one ad). */
-  private placeBoards(): void {
-    const batting = this.cam.pos.y < 3;
-    const hz = this.cam.p(v(0, 0, 400)).y;
-    this.boards.forEach((b, i) => {
-      const ad = this.ads[(i * 3 + Math.floor(this.m.balls / 2)) % this.ads.length];
-      b.setVisible(batting && this.phase !== 'menu');
-      b.setText(`${ad.text}${ad.sub ? `\n${ad.sub}` : ''}`);
-      b.setBackgroundColor(ad.bg);
-      b.setColor(ad.fg);
-      b.setFontSize(14);
-      b.setPosition(i ? 705 : 215, hz - 104);
-    });
   }
 
   private drawMeter(bt: number): void {
@@ -465,7 +453,7 @@ musicBtn.addEventListener('click', () => {
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'app',
-  backgroundColor: '#0d1b12',
+  transparent: true,
   scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: VW, height: VH },
   render: { antialias: true },
   scene: Game,

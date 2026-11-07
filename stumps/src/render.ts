@@ -8,9 +8,9 @@ export const VW = 960;
 export const VH = 540;
 
 export class Cam {
-  pos = v(0.5, 2.05, -2.5);
-  look = v(0, 0.65, 9);
-  F = 640;
+  pos = v(-0.9, 3.9, -7.4);
+  look = v(0, -0.6, 14);
+  F = 760;
   private f = v();
   private r = v();
   private u = v();
