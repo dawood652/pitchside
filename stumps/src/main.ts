@@ -59,6 +59,7 @@ class Game extends Phaser.Scene {
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private padAim: number | null = null;
   private wantReplay = false;
+  private perf = { ms: 0, frames: 0, done: false };
   private rt = 0; // replay ball time
   private replayEnd = 0;
 
@@ -337,10 +338,28 @@ class Game extends Phaser.Scene {
     else this.next();
   }
 
+  /** First few seconds of play: if the device can't hold ~40 fps on High, drop to Battery saver once. */
+  private autoQuality(ms: number): void {
+    const p = this.perf;
+    const st = this.screens.settings;
+    if (p.done || this.paused || !this.inPlay() || st.quality !== 'high') return;
+    p.ms += ms;
+    p.frames++;
+    if (p.ms < 4000) return;
+    p.done = true;
+    if ((p.frames * 1000) / p.ms < 38) {
+      st.quality = 'low';
+      store.set('settings', st);
+      this.applySettings(st);
+      this.hud.setHint('Switched to Battery saver graphics for smoother play (Settings to change)');
+    }
+  }
+
   // ---------------------------------------------------------------- loop
   update(_: number, deltaMs: number): void {
     const dt = Math.min(0.05, deltaMs / 1000);
     this.clock += dt;
+    this.autoQuality(deltaMs);
     this.pollPad();
     if (!this.paused) this.step(dt);
     this.view(dt);

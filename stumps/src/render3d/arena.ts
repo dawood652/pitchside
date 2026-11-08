@@ -173,7 +173,7 @@ export function createArena(container: HTMLElement, mobile: boolean, rect: () =>
   stand.position.set(0, 11, 0);
   scene.add(stand);
   // the near rows are real 3D fans on top of the painted terraces
-  const crowd = new Crowd(scene, standR, standR + 26, 22, mobile ? 2600 : 4200);
+  const crowd = new Crowd(scene, standR, standR + 26, 22, mobile ? 3000 : 5200);
   floodlights(scene, standR + 34);
   const roof = new THREE.Mesh(new THREE.CylinderGeometry(standR + 30, standR + 26, 4, 96, 1, true), new THREE.MeshStandardMaterial({ color: 0xdfe6ee, side: THREE.DoubleSide, roughness: 0.6 }));
   roof.position.set(0, 24, 0);

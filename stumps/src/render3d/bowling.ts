@@ -12,17 +12,29 @@ export const BOWL_TO = 0.9;
 const RUN_SPEED = 6.2;
 
 type Key = [number, number];
+/** Catmull-Rom through the keys: continuous velocity, so the body flows through each position
+ *  instead of easing in and out of every key (which looks robotic). */
 function curve(keys: Key[], t: number): number {
   if (t <= keys[0][0]) return keys[0][1];
-  for (let i = 1; i < keys.length; i++) {
-    if (t <= keys[i][0]) {
-      const [t0, a] = keys[i - 1];
-      const [t1, b] = keys[i];
-      const u = (t - t0) / (t1 - t0);
-      return a + (b - a) * u * u * (3 - 2 * u);
-    }
-  }
-  return keys[keys.length - 1][1];
+  const n = keys.length;
+  if (t >= keys[n - 1][0]) return keys[n - 1][1];
+  let i = 1;
+  while (t > keys[i][0]) i++;
+  const [t1, p1] = keys[i - 1];
+  const [t2, p2] = keys[i];
+  const [t0, p0] = keys[Math.max(0, i - 2)];
+  const [t3, p3] = keys[Math.min(n - 1, i + 1)];
+  const h = t2 - t1;
+  const m1 = i - 2 >= 0 ? ((p2 - p0) / (t2 - t0)) * h : p2 - p1;
+  const m2 = i + 1 < n ? ((p3 - p1) / (t3 - t1)) * h : p2 - p1;
+  const u = (t - t1) / h;
+  const u2 = u * u;
+  const u3 = u2 * u;
+  return (2 * u3 - 3 * u2 + 1) * p1 + (u3 - 2 * u2 + u) * m1 + (-2 * u3 + 3 * u2) * p2 + (u3 - u2) * m2;
+}
+/** Wrist: cocked back through the load, snapping forward through release (radians). */
+export function wristFlick(t: number): number {
+  return curve([[-0.5, 0], [-0.12, -0.7], [-0.02, -0.55], [0.06, 0.65], [0.25, 0.3], [0.6, 0]], t);
 }
 const D = Math.PI / 180;
 

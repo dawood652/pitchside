@@ -2,6 +2,7 @@
 // (cane ridges, knee roll, straps), padded gloves, keeper gloves. Each piece is built in the
 // body's rest pose and then follows its bone: world = bone * inverse(bone at rest) * piece at rest.
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
 import { RbPerson } from './rocketbox';
 
 interface Attached {
@@ -69,21 +70,31 @@ function pad(): THREE.Group {
 }
 
 function glove(color: number): THREE.Group {
+  // batting glove: padded back with sausage finger rolls, thumb guard, coloured cuff
   const g = new THREE.Group();
-  const white = new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.65 });
-  const trim = new THREE.MeshStandardMaterial({ color, roughness: 0.5 });
-  const back = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.035, 0.11, 2, 1, 2), white);
-  back.position.set(0, 0.01, 0.045);
+  const white = new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.62 });
+  const seam = new THREE.MeshStandardMaterial({ color: 0xd8d8d0, roughness: 0.7 });
+  const trim = new THREE.MeshStandardMaterial({ color, roughness: 0.45 });
+  const back = new THREE.Mesh(new RoundedBoxGeometry(0.095, 0.04, 0.1, 3, 0.016), white);
+  back.position.set(0, 0.012, 0.045);
+  g.add(back);
   for (let i = 0; i < 4; i++) {
-    const f = new THREE.Mesh(new THREE.CapsuleGeometry(0.013, 0.07, 3, 8), white);
-    f.rotation.x = Math.PI / 2;
-    f.position.set(-0.036 + i * 0.024, 0.02, 0.13);
-    g.add(f);
+    for (let j = 0; j < 3; j++) {
+      const roll = new THREE.Mesh(new THREE.CapsuleGeometry(0.0135, 0.016, 3, 8), j === 1 ? seam : white);
+      roll.rotation.x = Math.PI / 2;
+      roll.position.set(-0.035 + i * 0.0235, 0.018 - j * 0.004, 0.105 + j * 0.026);
+      g.add(roll);
+    }
   }
-  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.052, 0.06, 16), trim);
+  const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.015, 0.05, 3, 8), white);
+  thumb.rotation.set(Math.PI / 2, 0, 0.7);
+  thumb.position.set(0.05, -0.005, 0.07);
+  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.052, 0.07, 18), trim);
   cuff.rotation.x = Math.PI / 2;
-  cuff.position.z = -0.02;
-  g.add(back, cuff);
+  cuff.position.z = -0.025;
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.006, 6, 18), white);
+  band.position.z = 0.008;
+  g.add(thumb, cuff, band);
   return g;
 }
 

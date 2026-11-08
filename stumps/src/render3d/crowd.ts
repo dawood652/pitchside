@@ -2,38 +2,32 @@
 // colour and idle sway, who leap up with their arms in the air when something big happens.
 // One draw call; the animation runs in the vertex shader.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 
 const SHIRTS = [0xc9473f, 0xeae6dc, 0x2e4a7a, 0xd9a63b, 0x3f8f7f, 0x6d5a9e, 0xc76b3a, 0x4f7fc4, 0x2f2f35, 0x9fb3c8, 0x7a1f2b, 0x1d8a4c, 0xf2c94c, 0x1fb6e8];
 
-/** One fan: torso, head, two arms, legs. Attribute `part`: 0 shirt, 1 skin, 2 left arm, 3 right arm, 4 trousers. */
+/** One fan (indexed, ~300 vertices): rounded torso, neck, head with hair, arms, seated legs.
+ *  Attribute `part`: 0 shirt, 1 skin, 2 left arm, 3 right arm, 4 trousers, 5 hair / cap. */
 function fanGeometry(): THREE.BufferGeometry {
-  const parts: [THREE.BufferGeometry, number][] = [];
-  const box = (w: number, h: number, d: number, x: number, y: number, z: number, part: number) => {
-    const g = new THREE.BoxGeometry(w, h, d);
+  const parts: THREE.BufferGeometry[] = [];
+  const put = (g: THREE.BufferGeometry, part: number, x: number, y: number, z: number, sx = 1, sy = 1, sz = 1) => {
+    g.scale(sx, sy, sz);
     g.translate(x, y, z);
-    parts.push([g, part]);
+    const n = g.attributes.position.count;
+    g.setAttribute('part', new THREE.Float32BufferAttribute(new Array(n).fill(part), 1));
+    g.deleteAttribute('uv');
+    parts.push(g);
   };
-  box(0.4, 0.5, 0.24, 0, 0.75, 0, 0); // torso
-  const head = new THREE.IcosahedronGeometry(0.12, 0);
-  head.translate(0, 1.14, 0.01);
-  parts.push([head, 1]);
-  box(0.11, 0.48, 0.11, -0.26, 0.74, 0, 2); // arms hang from the shoulders (pivot y = 0.98)
-  box(0.11, 0.48, 0.11, 0.26, 0.74, 0, 3);
-  box(0.36, 0.2, 0.46, 0, 0.42, 0.13, 4); // seated legs
-  const pos: number[] = [];
-  const nor: number[] = [];
-  const part: number[] = [];
-  for (const [g, p] of parts) {
-    const ng = g.toNonIndexed();
-    pos.push(...(ng.attributes.position.array as Float32Array));
-    nor.push(...(ng.attributes.normal.array as Float32Array));
-    for (let i = 0; i < ng.attributes.position.count; i++) part.push(p);
-  }
-  const out = new THREE.BufferGeometry();
-  out.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  out.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
-  out.setAttribute('part', new THREE.Float32BufferAttribute(part, 1));
-  return out;
+  put(new THREE.CapsuleGeometry(0.17, 0.26, 2, 7), 0, 0, 0.76, 0, 1.15, 1, 0.72); // torso
+  put(new THREE.CylinderGeometry(0.045, 0.05, 0.08, 6), 1, 0, 1.02, 0.01); // neck
+  put(new THREE.SphereGeometry(0.105, 8, 6), 1, 0, 1.15, 0.015, 0.92, 1.05, 1); // head
+  put(new THREE.SphereGeometry(0.11, 8, 4, 0, Math.PI * 2, 0, Math.PI * 0.5), 5, 0, 1.17, 0.0, 0.95, 0.9, 1.02); // hair / cap
+  put(new THREE.CapsuleGeometry(0.048, 0.36, 2, 5), 2, -0.25, 0.75, 0); // arms hang from the shoulders (pivot y = 0.98)
+  put(new THREE.CapsuleGeometry(0.048, 0.36, 2, 5), 3, 0.25, 0.75, 0);
+  const thigh = (x: number) => { const g = new THREE.CapsuleGeometry(0.075, 0.3, 2, 5); g.rotateX(Math.PI / 2); put(g, 4, x, 0.44, 0.17); };
+  thigh(-0.1);
+  thigh(0.1); // seated: thighs forward
+  return mergeGeometries(parts)!;
 }
 
 export class Crowd {
@@ -44,11 +38,12 @@ export class Crowd {
   /** Seats on a cone: radius r0 at height 0 rising to r1 at height h, centred on (0, 0, cz). */
   constructor(scene: THREE.Scene, r0: number, r1: number, h: number, count: number) {
     const geo = fanGeometry();
-    const rows = 15;
+    const rows = 18;
     const perRow = Math.ceil(count / rows);
     const n = rows * perRow;
     const phase = new Float32Array(n);
     const skin = new Float32Array(n);
+    const hair = new Float32Array(n);
     const mat = new THREE.MeshLambertMaterial({ color: 0xffffff });
     const u = this.uniforms;
     mat.onBeforeCompile = (sh) => {
@@ -57,9 +52,9 @@ export class Crowd {
         .replace(
           '#include <common>',
           `#include <common>
-attribute float part; attribute float aPhase; attribute float aSkin;
+attribute float part; attribute float aPhase; attribute float aSkin; attribute float aHair;
 uniform float uTime; uniform float uCheer;
-varying vec3 vTint;`,
+varying vec3 vTint; varying float vShirt;`,
         )
         .replace(
           '#include <begin_vertex>',
@@ -78,16 +73,18 @@ varying vec3 vTint;`,
     transformed = piv + q;
   }
   // stand up and bounce
-  if (part < 3.5) transformed.y += on * (0.35 + 0.12 * abs(sin(uTime * 7.0 + ph)));
+  if (part < 3.5 || part > 4.5) transformed.y += on * (0.35 + 0.12 * abs(sin(uTime * 7.0 + ph)));
   transformed.y += 0.015 * sin(uTime * 2.0 + ph);
   vec3 skinC = mix(vec3(0.42, 0.25, 0.14), vec3(0.95, 0.76, 0.6), aSkin);
-  vTint = part > 0.5 && part < 1.5 ? skinC : part > 3.5 ? vec3(0.12, 0.13, 0.16) : vec3(1.0);`,
+  vec3 hairC = aHair < 0.55 ? mix(vec3(0.05, 0.04, 0.03), vec3(0.35, 0.22, 0.12), aHair / 0.55) : aHair < 0.8 ? vec3(0.85, 0.85, 0.82) : vec3(1.0); // dark/brown hair, white cap, or a cap in the shirt colour
+  vTint = part > 0.5 && part < 1.5 ? skinC : part > 4.5 ? hairC : vec3(0.13, 0.14, 0.18);
+  vShirt = part < 0.5 || (part > 1.5 && part < 3.5) || (part > 4.5 && aHair > 0.8) ? 1.0 : 0.0; // shirt, sleeves, team caps take the shirt colour`,
         );
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vTint;')
-        .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb *= vTint;');
+        .replace('#include <common>', '#include <common>\nvarying vec3 vTint; varying float vShirt;')
+        .replace('#include <color_fragment>', '#include <color_fragment>\n  diffuseColor.rgb = mix(vTint, diffuseColor.rgb, vShirt);');
     };
-    mat.customProgramCacheKey = () => 'crowd-1';
+    mat.customProgramCacheKey = () => 'crowd-3';
     this.mesh = new THREE.InstancedMesh(geo, mat, n);
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
@@ -107,11 +104,13 @@ varying vec3 vTint;`,
         this.mesh.setColorAt(k, col.set(SHIRTS[(Math.random() * SHIRTS.length) | 0]));
         phase[k] = Math.random();
         skin[k] = Math.random();
+        hair[k] = Math.random();
         k++;
       }
     }
     geo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(phase, 1));
     geo.setAttribute('aSkin', new THREE.InstancedBufferAttribute(skin, 1));
+    geo.setAttribute('aHair', new THREE.InstancedBufferAttribute(hair, 1));
     this.mesh.frustumCulled = false;
     this.mesh.receiveShadow = false;
     scene.add(this.mesh);

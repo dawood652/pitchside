@@ -16,7 +16,7 @@ import { kitMaterial, KitLook, loadPlayerAsset, PlayerAsset } from './playerMode
 import { BatterRig, placeBat } from './poser';
 import { AVATARS, loadRocketbox, RbAsset, RbPerson, Retarget } from './rocketbox';
 import { Gear } from './gear';
-import { BOWL_FROM, BOWL_TO, bowlerJoints, bowlerZ } from './bowling';
+import { BOWL_FROM, BOWL_TO, bowlerJoints, bowlerZ, wristFlick } from './bowling';
 
 const W = (p: V) => new THREE.Vector3(-p.x, p.y, p.z);
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
@@ -106,18 +106,11 @@ export class World3D {
     this.aim.scale.setScalar(s);
   }
 
-  /** 'low' for older phones: native pixel ratio 1, no bloom, smaller shadows. */
+  /** 'low' for older phones: pixel ratio 1 and no bloom (shadows untouched: changing them recompiles every shader). */
   setQuality(q: 'high' | 'low'): void {
     const r = this.arena.renderer;
     r.setPixelRatio(q === 'low' ? 1 : Math.min(devicePixelRatio || 1, 2));
     this.bloom.enabled = q === 'high';
-    const sz = q === 'low' ? 1024 : 2048;
-    const sh = this.arena.sun.shadow;
-    if (sh.mapSize.x !== sz) {
-      sh.mapSize.set(sz, sz);
-      sh.map?.dispose();
-      sh.map = null;
-    }
     this.resize();
   }
 
@@ -249,17 +242,35 @@ export class World3D {
     this.bowler.update(dt);
     if (this.bowlRT && this.rBowler && this.bowlRig) {
       const bt = v.bowler.t;
+      const mocap = (t: number | null) => {
+        // recorded run-up, or standing at the end of the follow-through
+        const run = t !== null && t < BOWL_FROM + 0.12;
+        const z = t === null ? 26 : bowlerZ(Math.min(t, BOWL_TO));
+        this.rBowler!.place(-0.13, z, Math.PI);
+        this.rBowler!.play(run ? 'run_fast_01' : 'idle_neutral_01', run ? 1.05 : 1, 0.15);
+        this.rBowler!.update(dt);
+      };
       if (bt !== null && bt >= BOWL_FROM && bt <= BOWL_TO) {
-        // the delivery stride: procedural joints -> driver rig -> realistic body
+        // blend in from the run (first 0.12 s) and out to standing (last 0.2 s) so there's no jump
+        const kIn = 1 - Math.min(1, (bt - BOWL_FROM) / 0.12);
+        const kOut = Math.max(0, (bt - (BOWL_TO - 0.2)) / 0.2);
+        let snap = null;
+        if (kIn > 0 || kOut > 0) {
+          mocap(kIn > 0 ? bt : BOWL_TO + 1);
+          snap = this.bowlRT.snapshot();
+        }
+        // the delivery stride: procedural joints -> driver rig (+ wrist snap) -> realistic body
         this.bowlRig.pose(bowlerJoints(bt), { x: 0, y: 1, z: 0 }, true);
+        this.bowler.turn('hand_r', new THREE.Vector3(-1, 0, 0), wristFlick(bt));
         this.bowlRT.apply(true);
-      } else {
-        // mocap run-up, then walk back / stand at the end of the follow-through
-        const run = bt !== null && bt < BOWL_FROM;
-        const z = bt === null ? 26 : bowlerZ(Math.min(bt, BOWL_TO));
-        this.rBowler.place(-(0.13), z, Math.PI);
-        this.rBowler.play(run ? 'run_fast_01' : 'idle_neutral_01', run ? 1.05 : 1, 0.15);
-        this.rBowler.update(dt);
+        if (snap) this.bowlRT.blend(snap, Math.max(kIn, kOut) ** 0.8);
+      } else mocap(bt);
+      // the ball sits in the bowling hand until it's let go
+      if (!v.ball && bt !== null && bt < 0) {
+        this.ball.visible = true;
+        const h = this.rBowler.bone('R Hand');
+        const f = this.rBowler.bone('R Finger2');
+        h.getWorldPosition(this.ball.position).lerp(f.getWorldPosition(new THREE.Vector3()), 0.8);
       }
     }    // keeper
     this.keeper.place(-v.keeper.x, v.keeper.z, 0);

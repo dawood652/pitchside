@@ -301,6 +301,27 @@ export class Retarget {
     }
   }
 
+  /** World rotations of every mapped body bone (+ pelvis position): to blend between animation sources. */
+  snapshot(): { q: Map<THREE.Bone, THREE.Quaternion>; pelvis: THREE.Vector3 } {
+    const q = new Map<THREE.Bone, THREE.Quaternion>();
+    this.dst.root.updateMatrixWorld(true);
+    for (const L of this.links) q.set(L.d, L.d.getWorldQuaternion(new THREE.Quaternion()));
+    return { q, pelvis: this.dstPelvis.getWorldPosition(new THREE.Vector3()) };
+  }
+
+  /** Blend the current pose toward a snapshot: k = 0 keeps the current pose, 1 = the snapshot. */
+  blend(snap: { q: Map<THREE.Bone, THREE.Quaternion>; pelvis: THREE.Vector3 }, k: number): void {
+    if (k <= 0) return;
+    const pw = this.dstPelvis.getWorldPosition(new THREE.Vector3()).lerp(snap.pelvis, k);
+    this.dstPelvis.parent!.worldToLocal(pw);
+    this.dstPelvis.position.copy(pw);
+    this.dstPelvis.updateMatrixWorld(true);
+    for (const L of this.links) {
+      const cur = L.d.getWorldQuaternion(new THREE.Quaternion());
+      this.setWorldQ(L.d, cur.slerp(snap.q.get(L.d)!, k));
+    }
+  }
+
   /** Two-bone IK: end effector to target, bending toward the pole point. */
   private ik(a: THREE.Bone, b: THREE.Bone, c: THREE.Bone, target: THREE.Vector3, pole: THREE.Vector3): void {
     const pa = a.getWorldPosition(new THREE.Vector3());
