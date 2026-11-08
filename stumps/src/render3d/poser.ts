@@ -70,7 +70,7 @@ export class BatterRig {
     this.setWorldQ(name, _q.clone());
   }
 
-  pose(sk: Skeleton, ball: V | null): void {
+  pose(sk: Skeleton, ball: V | null, free = false): void {
     const { p, rest } = this;
     for (const [bone, rq] of rest.q) {
       bone.quaternion.copy(rq);
@@ -91,12 +91,17 @@ export class BatterRig {
     for (const [n, k] of spines) this.basis(n, rest.x, rest.y, hipX.clone().lerp(shX, k), up);
     // head on the ball
     p.look(ball ? W(ball) : W(sk.look), 1);
+    if (free) {
+      // no bat (the bowler): arms by IK, elbows toward the given elbow points
+      for (const [s, sh, el, ha] of [['l', sk.shL, sk.elL, sk.haL], ['r', sk.shR, sk.elR, sk.haR]] as const) p.reach(s, W(ha), W(el).sub(W(sh).add(W(ha)).multiplyScalar(0.5)));
+    } else {
     // hands: top (left) hand in front of the handle, bottom (right) hand behind it
     const bat = sk.bat;
     const d = Wd(bat.d).normalize();
     const n = Wd(bat.n).normalize();
     this.hand('l', W(sk.haL), d, n, 1, W(sk.elL).sub(W(sk.shL)));
     this.hand('r', W(sk.haR), d, n, -1, W(sk.elR).sub(W(sk.shR)));
+    }
     // legs onto the feet, knees toward the engine's knees, feet pointing at the toes
     for (const [s, hip, knee, ft, toe] of [['l', sk.hipL, sk.knL, sk.ftL, sk.toeL], ['r', sk.hipR, sk.knR, sk.ftR, sk.toeR]] as const) {
       const pole = W(knee).sub(W(hip).add(W(ft)).multiplyScalar(0.5));

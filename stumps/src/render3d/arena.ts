@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { BOUNDARY } from '../batting/physics';
 import { crowdTexture, floodlights, grassMaterial, pitchMaterial, skyAndLight } from './look';
+import { Crowd } from './crowd';
 const PITCH_LEN = 20.12;
 import { Ad, drawAd } from '../ads';
 
@@ -17,6 +18,7 @@ export interface Arena {
   sun: THREE.DirectionalLight;
   stumps: { near: Stumps; far: Stumps };
   crowd: THREE.Mesh;
+  fans: Crowd;
   resize(): void;
   setAds(ads: Ad[]): void;
   update(dt: number): void;
@@ -170,6 +172,8 @@ export function createArena(container: HTMLElement, mobile: boolean, rect: () =>
   const stand = new THREE.Mesh(new THREE.CylinderGeometry(standR + 26, standR, 22, 96, 1, true), new THREE.MeshStandardMaterial({ map: crowdTex, side: THREE.BackSide, roughness: 1 }));
   stand.position.set(0, 11, 0);
   scene.add(stand);
+  // the near rows are real 3D fans on top of the painted terraces
+  const crowd = new Crowd(scene, standR, standR + 26, 22, mobile ? 2600 : 4200);
   floodlights(scene, standR + 34);
   const roof = new THREE.Mesh(new THREE.CylinderGeometry(standR + 30, standR + 26, 4, 96, 1, true), new THREE.MeshStandardMaterial({ color: 0xdfe6ee, side: THREE.DoubleSide, roughness: 0.6 }));
   roof.position.set(0, 24, 0);
@@ -255,7 +259,8 @@ export function createArena(container: HTMLElement, mobile: boolean, rect: () =>
     }));
   };
   const update = (dt: number) => {
+    crowd.update(dt);
     if (ledTex) ledTex.offset.x = (ledTex.offset.x + dt * 0.012) % 1;
   };
-  return { renderer, scene, camera, sun, stumps: { near, far }, crowd: stand, resize, setAds, update };
+  return { renderer, scene, camera, sun, stumps: { near, far }, crowd: stand, fans: crowd, resize, setAds, update };
 }

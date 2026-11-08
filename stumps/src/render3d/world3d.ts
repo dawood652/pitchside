@@ -7,7 +7,7 @@ import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Skeleton } from '../batting/body';
-import { V } from '../batting/vec';
+import { v, V } from '../batting/vec';
 import { Cam } from '../render';
 import { Ad } from '../ads';
 import { Arena, createArena } from './arena';
@@ -16,6 +16,7 @@ import { kitMaterial, KitLook, loadPlayerAsset, PlayerAsset } from './playerMode
 import { BatterRig, placeBat } from './poser';
 import { AVATARS, loadRocketbox, RbAsset, RbPerson, Retarget } from './rocketbox';
 import { Gear } from './gear';
+import { BOWL_FROM, BOWL_TO, bowlerJoints, bowlerZ } from './bowling';
 
 const W = (p: V) => new THREE.Vector3(-p.x, p.y, p.z);
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
@@ -34,7 +35,7 @@ export interface FieldView {
   ballLook: V | null;
   fielders: V[];
   keeper: V;
-  bowler: { z: number; phase: 'idle' | 'run' | 'bowl' | 'follow' };
+  bowler: { z: number; phase: 'idle' | 'run' | 'bowl' | 'follow'; t: number | null }; // t: time relative to release
   bowled: boolean;
 }
 
@@ -60,6 +61,7 @@ export class World3D {
   private rFielders: RbPerson[] = [];
   private batRT: Retarget | null = null;
   private bowlRT: Retarget | null = null;
+  private bowlRig: BatterRig | null = null;
   private gear: Gear;
   private constructor(public arena: Arena, private asset: PlayerAsset) {
     this.gear = new Gear(arena.scene);
@@ -80,6 +82,15 @@ export class World3D {
     this.aim.renderOrder = 2;
     this.aim.visible = false;
     arena.scene.add(this.aim);
+    // ball trail: a fading streak behind the ball in flight
+    const tg = new THREE.BufferGeometry();
+    tg.setAttribute('position', new THREE.Float32BufferAttribute(new Float32Array(40 * 3), 3));
+    const cols = new Float32Array(40 * 3);
+    for (let i = 0; i < 40; i++) cols.set([1, 0.85 - i * 0.01, 0.4 - i * 0.008].map((c) => c * (1 - i / 40)), i * 3);
+    tg.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    this.trail = new THREE.Line(tg, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }));
+    this.trail.frustumCulled = false;
+    arena.scene.add(this.trail);
   }
 
   /** Where the player is aiming (field coords), or null to hide. Lofted aims are orange and bigger. */
@@ -153,6 +164,7 @@ export class World3D {
     this.gear.dress(this.rBatter, { helmet: 0x0f8a4c, pads: true, gloves: 0x0f8a4c });
     this.batRT = new Retarget({ root: this.batter.m.root, bones: this.batter.m.bones }, this.rBatter);
     this.rBowler = new RbPerson(rb, 'rb09', s);
+    this.bowlRig = new BatterRig(this.bowler);
     this.bowlRT = new Retarget({ root: this.bowler.m.root, bones: this.bowler.m.bones }, this.rBowler);
     this.rKeeper = new RbPerson(rb, 'rb16', s);
     this.gear.dress(this.rKeeper, { pads: true, gloves: 0x222222, keeper: true });
@@ -182,6 +194,17 @@ export class World3D {
     for (const p of [this.rBowler, this.rKeeper, ...this.rFielders]) p?.setKit(fieldKit, dark(fieldKit));
   }
 
+  /** The crowd (and fielders, for a wicket) react to the ball's outcome. */
+  celebrate(kind: 'six' | 'four' | 'out' | 'runs' | 'dot'): void {
+    const lvl = { six: 1, four: 0.75, out: 0.85, runs: 0, dot: 0 }[kind];
+    if (lvl) this.arena.fans.celebrate(lvl);
+    if (kind === 'out') this.cheerUntil = this.time + 2.6;
+  }
+  private time = 0;
+  private trail!: THREE.Line;
+  private trailPts: THREE.Vector3[] = [];
+  private cheerUntil = 0;
+
   setAds(ads: Ad[]): void {
     this.arena.setAds(ads);
   }
@@ -203,6 +226,19 @@ export class World3D {
     // ball
     this.ball.visible = !!v.ball;
     if (v.ball) this.ball.position.copy(W(v.ball));
+    // trail: only while the ball is travelling (not in a hand, not jumping between balls)
+    const last = this.trailPts[0];
+    if (!v.ball || (last && last.distanceTo(this.ball.position) > 8)) this.trailPts = [];
+    else if (!last || last.distanceTo(this.ball.position) > 0.05) this.trailPts.unshift(this.ball.position.clone());
+    else if (last.distanceTo(this.ball.position) < 0.01) this.trailPts.pop();
+    this.trailPts.length = Math.min(this.trailPts.length, 40);
+    const tp = this.trail.geometry.attributes.position as THREE.BufferAttribute;
+    for (let i = 0; i < 40; i++) {
+      const q = this.trailPts[Math.min(i, this.trailPts.length - 1)] ?? this.ball.position;
+      tp.setXYZ(i, q.x, q.y, q.z);
+    }
+    tp.needsUpdate = true;
+    this.trail.visible = this.trailPts.length > 2;
     // bowler: run in, bowl, follow through
     const bz = v.bowler.z;
     this.bowler.place(0.45, bz, Math.PI);
@@ -211,11 +247,21 @@ export class World3D {
     else if (v.bowler.phase === 'follow') this.bowler.play('Jog_Fwd_Loop', 0.8, 0.3);
     else this.bowler.play('Idle_Loop');
     this.bowler.update(dt);
-    if (this.bowlRT) {
-      this.bowler.m.root.updateMatrixWorld(true);
-      this.bowlRT.apply(false);
-    }
-    // keeper
+    if (this.bowlRT && this.rBowler && this.bowlRig) {
+      const bt = v.bowler.t;
+      if (bt !== null && bt >= BOWL_FROM && bt <= BOWL_TO) {
+        // the delivery stride: procedural joints -> driver rig -> realistic body
+        this.bowlRig.pose(bowlerJoints(bt), { x: 0, y: 1, z: 0 }, true);
+        this.bowlRT.apply(true);
+      } else {
+        // mocap run-up, then walk back / stand at the end of the follow-through
+        const run = bt !== null && bt < BOWL_FROM;
+        const z = bt === null ? 26 : bowlerZ(Math.min(bt, BOWL_TO));
+        this.rBowler.place(-(0.13), z, Math.PI);
+        this.rBowler.play(run ? 'run_fast_01' : 'idle_neutral_01', run ? 1.05 : 1, 0.15);
+        this.rBowler.update(dt);
+      }
+    }    // keeper
     this.keeper.place(-v.keeper.x, v.keeper.z, 0);
     this.keeper.update(dt);
     if (this.rKeeper) {
@@ -234,7 +280,8 @@ export class World3D {
       const r = this.rFielders[i];
       if (r) {
         r.place(p.x, p.z, yaw);
-        r.play(moved > 4 ? 'run_fast_01' : moved > 0.8 ? 'run_slow_01' : 'idle_neutral_01', moved > 4 ? moved / 6.5 : 1, 0.2);
+        const cheering = this.time < this.cheerUntil && moved < 0.8;
+        r.play(cheering ? 'cheer_01' : moved > 4 ? 'run_fast_01' : moved > 0.8 ? 'run_slow_01' : 'idle_neutral_01', moved > 4 ? moved / 6.5 : cheering ? 1.4 : 1, 0.2);
         r.update(dt);
       }
       this.prev[i].copy(p);
@@ -246,6 +293,7 @@ export class World3D {
     arena.stumps.near.update(dt);
     arena.update(dt);
     this.gear.update();
+    this.time += dt;
     this.aimT += dt;
     this.composer.render(dt);
   }

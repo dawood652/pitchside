@@ -22,7 +22,7 @@ const RUNUP = 1.3;
 const LOFT_DIST = 64;
 const LENGTHS: Record<string, string> = { yorker: 'Yorker', full: 'Full', good: 'Good length', short: 'Short', bouncer: 'Bouncer' };
 const CAMS = { broadcast: { pos: v(-0.9, 3.9, -7.4), look: v(0, -0.6, 14), zoom: 760 / 540 }, close: { pos: v(-0.7, 2.5, -4.4), look: v(0, 0.1, 12), zoom: 700 / 540 } };
-type Phase = 'menu' | 'intro' | 'runup' | 'ball' | 'result' | 'over';
+type Phase = 'menu' | 'intro' | 'runup' | 'ball' | 'result' | 'replay' | 'over';
 
 class Game extends Phaser.Scene {
   private g!: Phaser.GameObjects.Graphics;
@@ -58,6 +58,9 @@ class Game extends Phaser.Scene {
   private r = Math.random;
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private padAim: number | null = null;
+  private wantReplay = false;
+  private rt = 0; // replay ball time
+  private replayEnd = 0;
 
   create(): void {
     this.g = this.add.graphics();
@@ -119,7 +122,7 @@ class Game extends Phaser.Scene {
   }
 
   private inPlay(): boolean {
-    return this.phase === 'runup' || this.phase === 'ball' || this.phase === 'result';
+    return this.phase === 'runup' || this.phase === 'ball' || this.phase === 'result' || this.phase === 'replay';
   }
 
   private setPaused(on: boolean): void {
@@ -189,7 +192,7 @@ class Game extends Phaser.Scene {
   }
 
   private ballTime(): number {
-    return this.phase === 'runup' ? this.t - RUNUP : this.phase === 'ball' ? this.t : 99;
+    return this.phase === 'runup' ? this.t - RUNUP : this.phase === 'ball' ? this.t : this.phase === 'replay' ? this.rt : 99;
   }
 
   private isLofted(p: V): boolean {
@@ -199,7 +202,7 @@ class Game extends Phaser.Scene {
   /** A tap/click/button: hit if the ball is coming, skip the replay if it's over. */
   private press(target: V): void {
     if (this.paused) return;
-    if (this.phase === 'result' && this.t > 0.7) return this.advance();
+    if ((this.phase === 'result' && this.t > 0.7) || this.phase === 'replay') return this.advance();
     this.hit(target);
   }
 
@@ -308,6 +311,8 @@ class Game extends Phaser.Scene {
     const dist = end && this.contact && runs >= 4 ? ` · ${Math.round(Math.hypot(end.x, end.z))} m` : '';
     const small = out ? (this.shot ? this.shot.name : '') : this.shot ? `${this.shot.name}${dist}` : '';
     this.hud.bannerShow(big, small.toUpperCase(), kind);
+    this.world?.celebrate(kind);
+    this.wantReplay = kind === 'six' || kind === 'four' || kind === 'out';
     if (out) sfx.crowd(false);
     if (runs >= 4) sfx.crowd(runs === 6);
     this.hud.score(this.m);
@@ -315,7 +320,18 @@ class Game extends Phaser.Scene {
     this.t = 0;
   }
 
+  private startReplay(): void {
+    this.wantReplay = false;
+    this.phase = 'replay';
+    this.rt = Math.max(-0.45, (this.tapT ?? this.T - 0.5) - 0.55);
+    this.replayEnd = this.contact ? this.contact.t + Math.min(this.fres?.t ?? 1.2, 3.2) + 0.5 : this.T + 0.9;
+    this.hud.clearFeedback();
+    this.hud.setChip('REPLAY');
+    this.hud.setHint('Tap to skip');
+  }
+
   private advance(): void {
+    this.hud.setHint('');
     store.set('played', true);
     if (this.m.done()) this.finish();
     else this.next();
@@ -366,7 +382,14 @@ class Game extends Phaser.Scene {
         this.record(f.runs, f.kind === 'caught', f.kind === 'caught' ? 'CAUGHT!' : f.kind === 'dropped' ? 'DROPPED!' : `${f.runs}`);
       }
     }
-    if (this.phase === 'result' && this.t > 2.4) this.advance();
+    if (this.phase === 'result' && this.wantReplay && this.t > 1.9) this.startReplay();
+    else if (this.phase === 'result' && this.t > 2.4) this.advance();
+    if (this.phase === 'replay') {
+      // slow motion around the hit (or the stumps), normal speed for the ball's flight
+      const key = this.contact ? this.contact.t : this.T;
+      this.rt += dt * (Math.abs(this.rt - key) < 0.3 ? 0.22 : 0.75);
+      if (this.rt > this.replayEnd) this.advance();
+    }
     // camera follows a struck ball
     if (this.contact && this.flight && bt > this.contact.t + 0.35 && this.behind === null) {
       const b = this.ballPos(bt);
@@ -388,14 +411,34 @@ class Game extends Phaser.Scene {
       }
       return this.flight.path[Math.min(this.flight.path.length - 1, Math.floor(ft * 120))].p;
     }
-    if (this.phase === 'ball') return sampleAt(this.path, Math.max(0, bt)).p;
+    if (this.phase === 'ball' || this.phase === 'replay') return sampleAt(this.path, Math.max(0, bt)).p;
     if (this.phase === 'result' && !this.contact) return sampleAt(this.path, this.T + 0.35 + Math.min(this.t, 0.3)).p;
     return null;
+  }
+
+  /** Replay cameras: side-on at the batter, a low stump cam for bowleds, then chase the ball. */
+  private replayCam(bt: number, dt: number): void {
+    const c = this.cam;
+    if (!this.contact) {
+      c.pos = this.bowled ? v(0.5, 0.45, -1.6) : v(3.6, 1.2, 0.9);
+      c.look = this.bowled ? v(0, 0.5, 6) : v(-0.2, 0.95, 1.4);
+    } else if (bt < this.contact.t + 0.25) {
+      c.pos = v(3.4, 1.35, 1.6);
+      c.look = v(-0.2, 1.0, 1.3);
+    } else {
+      const b = this.ballPos(bt) ?? v(0, 1, 10);
+      const d = Math.hypot(b.x, b.z) || 1;
+      const want = v(b.x - (b.x / d) * 9, 2.2 + b.y * 0.5, b.z - (b.z / d) * 9);
+      c.pos = lerp(c.pos, want, Math.min(1, dt * 2.5));
+      c.look = lerp(c.look, b, Math.min(1, dt * 5));
+    }
+    c.update();
   }
 
   private view(dt: number): void {
     const bt = this.ballTime();
     const menuish = this.phase === 'menu' || this.phase === 'over' || this.phase === 'intro';
+    if (this.phase === 'replay') this.replayCam(bt, dt);
     if (menuish) {
       // slow orbit round the ground behind the menus
       const a = this.clock * 0.06;
@@ -416,10 +459,11 @@ class Game extends Phaser.Scene {
       const padTarget = this.padAim !== null ? v(Math.sin(this.padAim) * 45, 0, Math.cos(this.padAim) * 45) : null;
       const aim = menuish ? null : this.target && !this.contact ? this.target : !this.target && (this.phase === 'runup' || this.phase === 'ball') ? (padTarget ?? this.hover) : null;
       this.world.setAim(aim, aim ? this.isLofted(aim) : false, !!this.target);
-      this.world.frame(this.cam, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(0.75, 0, -2.3), bowler: { z: menuish ? 26 : bz, phase: menuish ? 'idle' : bphase }, bowled: this.bowled && this.phase === 'result' }, dt);
+      this.world.frame(this.cam, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(0.75, 0, -2.3), bowler: { z: menuish ? 26 : bz, phase: menuish ? 'idle' : bphase, t: menuish ? null : bt }, bowled: this.bowled && (this.phase === 'result' || (this.phase === 'replay' && bt > this.T + 0.02)) }, dt);
     }
     if (!menuish) {
       const live = this.phase === 'runup' || this.phase === 'ball';
+      if (this.phase === 'replay') this.hud.meter(null, null, false);
       this.hud.meter(live ? bt - this.tIdeal : null, this.tapT === null ? null : this.tapT - this.tIdeal, live || (this.phase === 'result' && this.t < 0.8));
       const trail = this.flight && this.contact ? this.flight.path.slice(0, Math.max(1, Math.floor(ft * 120))).filter((_, i) => i % 6 === 0).map((s) => s.p) : null;
       this.hud.drawMap(this.m, { fielders, trail }, TEAMS[this.m.opp].kit);
