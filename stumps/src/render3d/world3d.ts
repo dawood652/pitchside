@@ -2,6 +2,10 @@
 // fielders on animation clips, the ball and the bat. Phaser draws the HUD on a transparent canvas
 // on top; the 3D camera copies the gameplay camera (Cam) so taps land where they look.
 import * as THREE from 'three';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Skeleton } from '../batting/body';
 import { V } from '../batting/vec';
 import { Cam, VH } from '../render';
@@ -42,10 +46,18 @@ export class World3D {
   private prev: THREE.Vector3[] = [];
   private ball: THREE.Mesh;
   private bowledShown = false;
+  private composer: EffectComposer;
   private constructor(public arena: Arena, private asset: PlayerAsset) {
     this.ball = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 12), new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.35 }));
     this.ball.castShadow = true;
     arena.scene.add(this.ball, this.bat);
+    // post: MSAA render, a soft bloom on the bright highlights, then tone mapping + sRGB
+    const r = arena.renderer;
+    const size = r.getDrawingBufferSize(new THREE.Vector2());
+    this.composer = new EffectComposer(r, new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 }));
+    this.composer.addPass(new RenderPass(arena.scene, arena.camera));
+    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.16, 0.45, 0.92));
+    this.composer.addPass(new OutputPass());
   }
 
   static async create(container: HTMLElement, rect: () => DOMRect): Promise<World3D> {
@@ -136,10 +148,14 @@ export class World3D {
     this.bowledShown = v.bowled;
     arena.stumps.near.update(dt);
     arena.update(dt);
-    arena.renderer.render(arena.scene, cam);
+    this.composer.render(dt);
   }
 
   resize(): void {
     this.arena.resize();
+    const r = this.arena.renderer;
+    this.composer.setPixelRatio(r.getPixelRatio());
+    const s = r.getSize(new THREE.Vector2());
+    this.composer.setSize(s.x, s.y);
   }
 }

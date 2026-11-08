@@ -4,6 +4,7 @@
 // the off side shows on the right of the screen behind a right-handed batter.
 import * as THREE from 'three';
 import { BOUNDARY } from '../batting/physics';
+import { crowdTexture, floodlights, grassMaterial, pitchMaterial, skyAndLight } from './look';
 const PITCH_LEN = 20.12;
 import { Ad, drawAd } from '../ads';
 
@@ -108,97 +109,44 @@ export function createArena(container: HTMLElement, mobile: boolean, rect: () =>
   renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  renderer.toneMappingExposure = 0.92;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x8ec5f0);
-  scene.fog = new THREE.Fog(0xb9d7f0, 140, 320);
+  scene.fog = new THREE.Fog(0xcfdde8, 220, 700);
   const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 600);
 
-  scene.add(new THREE.HemisphereLight(0xdcecff, 0x3d6b33, 1.0));
-  const sun = new THREE.DirectionalLight(0xfff2dc, 2.6);
+  scene.add(new THREE.HemisphereLight(0xdcecff, 0x3d6b33, 0.35));
+  const sun = new THREE.DirectionalLight(0xfff0d6, 3.2);
   sun.position.set(-30, 60, -20);
+  skyAndLight(renderer, scene, sun.position.clone().normalize());
   sun.castShadow = true;
   const sm = mobile ? 2048 : 4096;
   sun.shadow.mapSize.set(sm, sm);
   const sc = sun.shadow.camera;
-  sc.left = -28;
-  sc.right = 28;
-  sc.top = 34;
-  sc.bottom = -14;
+  sc.left = -72;
+  sc.right = 72;
+  sc.top = 80;
+  sc.bottom = -72;
   sc.near = 10;
-  sc.far = 160;
+  sc.far = 220;
   sun.shadow.bias = -0.0003;
   sun.shadow.normalBias = 0.02;
-  sun.target.position.set(0, 0, 8);
+  sun.target.position.set(0, 0, 4);
   scene.add(sun, sun.target);
 
-  // outfield: radial gradient + mowing stripes
-  const grassTex = canvasTex(1024, 1024, (g) => {
-    g.fillStyle = '#3f8d38';
-    g.fillRect(0, 0, 1024, 1024);
-    for (let i = 0; i < 32; i++) {
-      g.fillStyle = i % 2 ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
-      g.fillRect(0, i * 32, 1024, 32);
-    }
-    for (let i = 0; i < 5000; i++) {
-      g.fillStyle = `rgba(${20 + Math.random() * 40},${90 + Math.random() * 60},${20 + Math.random() * 30},0.25)`;
-      g.fillRect(Math.random() * 1024, Math.random() * 1024, 2, 2);
-    }
-  });
-  const ground = new THREE.Mesh(new THREE.CircleGeometry(BOUNDARY + 8, 96), new THREE.MeshStandardMaterial({ map: grassTex, roughness: 0.95 }));
+  const ground = new THREE.Mesh(new THREE.CircleGeometry(BOUNDARY + 16, 128), grassMaterial());
   ground.rotation.x = -Math.PI / 2;
   ground.position.z = 0;
   ground.receiveShadow = true;
   scene.add(ground);
-  const surround = new THREE.Mesh(new THREE.RingGeometry(BOUNDARY + 8, BOUNDARY + 16, 96), new THREE.MeshStandardMaterial({ color: 0x2f6f2a, roughness: 1 }));
-  surround.rotation.x = -Math.PI / 2;
-  surround.position.set(0, -0.01, 0);
-  scene.add(surround);
   // boundary rope
   const rope = new THREE.Mesh(new THREE.TorusGeometry(BOUNDARY, 0.12, 6, 160), new THREE.MeshStandardMaterial({ color: 0xffffff }));
   rope.rotation.x = Math.PI / 2;
   rope.position.set(0, 0.08, 0);
   scene.add(rope);
-  // pitch strip with worn ends
-  const pitchTex = canvasTex(256, 1024, (g) => {
-    const grd = g.createLinearGradient(0, 0, 0, 1024);
-    grd.addColorStop(0, '#b99c5f');
-    grd.addColorStop(0.5, '#cdb57c');
-    grd.addColorStop(1, '#b99c5f');
-    g.fillStyle = grd;
-    g.fillRect(0, 0, 256, 1024);
-    for (let i = 0; i < 4000; i++) {
-      g.fillStyle = `rgba(${120 + Math.random() * 60},${100 + Math.random() * 40},60,0.18)`;
-      g.fillRect(Math.random() * 256, Math.random() * 1024, 2, 3);
-    }
-    g.strokeStyle = 'rgba(255,255,255,0.95)';
-    g.lineWidth = 4;
-    const zy = (z: number) => 1024 * (1 - (z + 2.5) / (PITCH_LEN + 5));
-    const xx = (x: number) => 128 + (x / 1.6) * 128;
-    for (const z of [1.22, PITCH_LEN - 1.22]) {
-      g.beginPath();
-      g.moveTo(0, zy(z));
-      g.lineTo(256, zy(z));
-      g.stroke();
-    }
-    for (const z of [0, PITCH_LEN]) {
-      g.beginPath();
-      g.moveTo(xx(-1.32), zy(z));
-      g.lineTo(xx(1.32), zy(z));
-      g.stroke();
-    }
-    for (const s of [-1, 1])
-      for (const [a, b] of [[-1.2, 1.22], [PITCH_LEN - 1.22, PITCH_LEN + 1.2]]) {
-        g.beginPath();
-        g.moveTo(xx(s * 1.32), zy(a));
-        g.lineTo(xx(s * 1.32), zy(b));
-        g.stroke();
-      }
-  });
-  const pitch = new THREE.Mesh(new THREE.PlaneGeometry(3.2, PITCH_LEN + 5), new THREE.MeshStandardMaterial({ map: pitchTex, roughness: 0.9 }));
+  const pitch = new THREE.Mesh(new THREE.PlaneGeometry(3.2, PITCH_LEN + 5), pitchMaterial(PITCH_LEN));
   pitch.rotation.x = -Math.PI / 2;
   pitch.position.set(0, 0.005, PITCH_LEN / 2);
   pitch.receiveShadow = true;
@@ -217,28 +165,12 @@ export function createArena(container: HTMLElement, mobile: boolean, rect: () =>
   scene.add(near.group, far.group);
 
   // stands: sloped ring with a crowd texture, roof band, sight screens
-  const crowdTex = canvasTex(2048, 256, (g) => {
-    g.fillStyle = '#2a3442';
-    g.fillRect(0, 0, 2048, 256);
-    const cols = ['#e63946', '#f1faee', '#1d3557', '#ffb703', '#2a9d8f', '#8338ec', '#fb5607', '#3a86ff', '#06d6a0', '#ffffff'];
-    for (let y = 6; y < 256; y += 9)
-      for (let x = (y / 9) % 2 ? 4 : 0; x < 2048; x += 9) {
-        g.fillStyle = cols[(x * 7 + y * 13) % cols.length];
-        g.beginPath();
-        g.arc(x + Math.random() * 2, y, 3, 0, Math.PI * 2);
-        g.fill();
-        g.fillStyle = '#e8c39e';
-        g.beginPath();
-        g.arc(x, y - 4, 2, 0, Math.PI * 2);
-        g.fill();
-      }
-  });
-  crowdTex.wrapS = THREE.RepeatWrapping;
-  crowdTex.repeat.set(6, 1);
+  const crowdTex = crowdTexture();
   const standR = BOUNDARY + 18;
   const stand = new THREE.Mesh(new THREE.CylinderGeometry(standR + 26, standR, 22, 96, 1, true), new THREE.MeshStandardMaterial({ map: crowdTex, side: THREE.BackSide, roughness: 1 }));
   stand.position.set(0, 11, 0);
   scene.add(stand);
+  floodlights(scene, standR + 34);
   const roof = new THREE.Mesh(new THREE.CylinderGeometry(standR + 30, standR + 26, 4, 96, 1, true), new THREE.MeshStandardMaterial({ color: 0xdfe6ee, side: THREE.DoubleSide, roughness: 0.6 }));
   roof.position.set(0, 24, 0);
   scene.add(roof);
