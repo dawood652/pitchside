@@ -14,6 +14,8 @@ import { Arena, createArena } from './arena';
 import { armour, makeBat, Person } from './people';
 import { kitMaterial, KitLook, loadPlayerAsset, PlayerAsset } from './playerModel';
 import { BatterRig, placeBat } from './poser';
+import { AVATARS, loadRocketbox, RbAsset, RbPerson, Retarget } from './rocketbox';
+import { Gear } from './gear';
 
 const W = (p: V) => new THREE.Vector3(-p.x, p.y, p.z);
 const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
@@ -50,7 +52,17 @@ export class World3D {
   private bloom: UnrealBloomPass;
   private aim: THREE.Mesh;
   private aimT = 0;
+  // realistic bodies (Rocketbox); the mannequins above become invisible drivers when these load
+  private rb: RbAsset | null = null;
+  private rBatter: RbPerson | null = null;
+  private rBowler: RbPerson | null = null;
+  private rKeeper: RbPerson | null = null;
+  private rFielders: RbPerson[] = [];
+  private batRT: Retarget | null = null;
+  private bowlRT: Retarget | null = null;
+  private gear: Gear;
   private constructor(public arena: Arena, private asset: PlayerAsset) {
+    this.gear = new Gear(arena.scene);
     this.ball = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 12), new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.35 }));
     this.ball.castShadow = true;
     arena.scene.add(this.ball, this.bat);
@@ -101,9 +113,10 @@ export class World3D {
   static async create(container: HTMLElement, rect: () => DOMRect): Promise<World3D> {
     const mobile = matchMedia('(pointer: coarse)').matches;
     const arena = createArena(container, mobile, rect);
-    const asset = await loadPlayerAsset();
+    const [asset, rb] = await Promise.all([loadPlayerAsset(), loadRocketbox().catch((e) => (console.warn('realistic players failed to load', e), null))]);
     const w = new World3D(arena, asset);
     w.build(0x0f8a4c, 0x1d4ed8);
+    if (rb) w.buildReal(rb);
     return w;
   }
 
@@ -125,6 +138,33 @@ export class World3D {
     }
   }
 
+  /** Swap every visible player for a realistic body. The batter and bowler copy their (hidden) drivers. */
+  private buildReal(rb: RbAsset): void {
+    const s = this.arena.scene;
+    this.rb = rb;
+    const hide = (p: Person) => p.m.model.traverse((o) => ((o as THREE.Mesh).isMesh ? (o.visible = false) : null));
+    hide(this.batter);
+    hide(this.bowler);
+    this.keeper.m.root.visible = false;
+    this.fielders.forEach((f) => (f.m.root.visible = false));
+    // drop the mannequin's simple gear
+    for (const p of [this.batter, this.keeper]) p.m.model.traverse((o) => (o as THREE.Mesh).isMesh && !(o as THREE.SkinnedMesh).isSkinnedMesh && (o.visible = false));
+    this.rBatter = new RbPerson(rb, 'rb11', s);
+    this.gear.dress(this.rBatter, { helmet: 0x0f8a4c, pads: true, gloves: 0x0f8a4c });
+    this.batRT = new Retarget({ root: this.batter.m.root, bones: this.batter.m.bones }, this.rBatter);
+    this.rBowler = new RbPerson(rb, 'rb09', s);
+    this.bowlRT = new Retarget({ root: this.bowler.m.root, bones: this.bowler.m.bones }, this.rBowler);
+    this.rKeeper = new RbPerson(rb, 'rb16', s);
+    this.gear.dress(this.rKeeper, { pads: true, gloves: 0x222222, keeper: true });
+    this.rKeeper.play('crouch_idle');
+    for (let i = 0; i < 9; i++) {
+      const p = new RbPerson(rb, AVATARS[(i + 1) % AVATARS.length], s);
+      p.play('idle_neutral_01');
+      p.mixer.update(Math.random() * 5);
+      this.rFielders.push(p);
+    }
+  }
+
   /** Repaint kits for a new match. */
   setTeams(batKit: number, fieldKit: number): void {
     const paint = (p: Person, k: KitLook) =>
@@ -136,6 +176,10 @@ export class World3D {
     paint(this.bowler, kit(fieldKit, '#ffffff', 1));
     paint(this.keeper, kit(fieldKit, '#ffffff', 2, true));
     this.fielders.forEach((f, i) => paint(f, kit(fieldKit, '#ffffff', i + 3)));
+    const dark = (c: number) => new THREE.Color(c).multiplyScalar(0.55).getHex();
+    this.rBatter?.setKit(batKit, dark(batKit));
+    this.gear.recolor(batKit);
+    for (const p of [this.rBowler, this.rKeeper, ...this.rFielders]) p?.setKit(fieldKit, dark(fieldKit));
   }
 
   setAds(ads: Ad[]): void {
@@ -154,6 +198,7 @@ export class World3D {
     cam.updateProjectionMatrix();
     // batter + bat
     this.rig.pose(v.batter, v.ballLook);
+    this.batRT?.apply(true);
     placeBat(this.bat, v.batter.bat);
     // ball
     this.ball.visible = !!v.ball;
@@ -166,9 +211,17 @@ export class World3D {
     else if (v.bowler.phase === 'follow') this.bowler.play('Jog_Fwd_Loop', 0.8, 0.3);
     else this.bowler.play('Idle_Loop');
     this.bowler.update(dt);
+    if (this.bowlRT) {
+      this.bowler.m.root.updateMatrixWorld(true);
+      this.bowlRT.apply(false);
+    }
     // keeper
     this.keeper.place(-v.keeper.x, v.keeper.z, 0);
     this.keeper.update(dt);
+    if (this.rKeeper) {
+      this.rKeeper.place(-v.keeper.x, v.keeper.z, 0);
+      this.rKeeper.update(dt);
+    }
     // fielders: run when they move, face the ball
     this.fielders.forEach((f, i) => {
       const p = W(v.fielders[i]);
@@ -178,6 +231,12 @@ export class World3D {
       f.place(p.x, p.z, yaw);
       f.play(moved > 4 ? 'Sprint_Loop' : moved > 0.8 ? 'Jog_Fwd_Loop' : 'Idle_Loop', 1, 0.15);
       f.update(dt);
+      const r = this.rFielders[i];
+      if (r) {
+        r.place(p.x, p.z, yaw);
+        r.play(moved > 4 ? 'run_fast_01' : moved > 0.8 ? 'run_slow_01' : 'idle_neutral_01', moved > 4 ? moved / 6.5 : 1, 0.2);
+        r.update(dt);
+      }
       this.prev[i].copy(p);
     });
     // stumps
@@ -186,6 +245,7 @@ export class World3D {
     this.bowledShown = v.bowled;
     arena.stumps.near.update(dt);
     arena.update(dt);
+    this.gear.update();
     this.aimT += dt;
     this.composer.render(dt);
   }
