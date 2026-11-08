@@ -5,6 +5,15 @@
 import { add, dirOf, dist, ik2, lerp, mul, norm, rotAbout, rotDir, smooth, sub, UP, v, V } from './vec';
 import { BatPose, BallSample, Delivery, makeSwing, sampleAt, Swing, swingPose } from './physics';
 import { chooseShot } from './shots';
+import STYLE from './style.json';
+
+/** Sample a curve from the captured batting style at time tr relative to contact. */
+function style(key: 'pelvisH' | 'leanX' | 'headX', tr: number): number {
+  const c = STYLE[key];
+  const i = Math.max(0, Math.min(c.length - 1.001, (tr - STYLE.t0) / STYLE.dt));
+  const k = Math.floor(i);
+  return c[k] + (c[k + 1] - c[k]) * (i - k);
+}
 
 export const LIMB = { thigh: 0.45, shin: 0.46, upper: 0.3, fore: 0.29, spine: 0.5, shoulder: 0.19, hip: 0.11 };
 
@@ -137,9 +146,12 @@ export function batter(st: BatterState): Skeleton {
   const spineDir = norm(add(sub(nk, pF), v(0, 0.35, 0)));
   const pel = sub(nk, mul(spineDir, LIMB.spine));
   // hips stay between the feet and drop as the stride lengthens, so the front knee bends into the shot
-  pelvis.x = pel.x * 0.55 + pF.x * 0.45;
+  // captured style: crouch height and how far the shoulders lean over the hips toward the off side
+  const tr = t - contactT;
+  const crouch = 0.08 + style('pelvisH', tr) * (LIMB.thigh + LIMB.shin);
+  pelvis.x = (nk.x - style('leanX', tr)) * 0.6 + (pel.x * 0.55 + pF.x * 0.45) * 0.4;
   pelvis.z = pel.z * 0.55 + pF.z * 0.45;
-  pelvis.y = Math.min(0.95, Math.max(0.7, Math.min(pel.y, pF.y)));
+  pelvis.y = Math.min(0.95, Math.max(0.68, Math.min(pel.y, pF.y, crouch)));
   const look = path ? sampleAt(path, Math.max(0, Math.min(t, T))).p : v(0, 1.2, 20);
   const head = add(nk, add(mul(UP, 0.2), mul(norm(sub(look, nk)), 0.05)));
   // ---- arms onto the handle: top (left) hand at the top, bottom (right) hand a hand-width below
