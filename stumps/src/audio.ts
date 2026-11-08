@@ -1,11 +1,15 @@
 // Tiny Web Audio sound kit: bat crack, stumps, crowd swell.
 let ctx: AudioContext | null = null;
+let sfxOn = true;
+export function setSfx(on: boolean): void {
+  sfxOn = on;
+}
 export function audioStart(): void {
   if (!ctx) ctx = new AudioContext();
   if (ctx.state === 'suspended') void ctx.resume();
 }
 function noise(dur: number, freq: number, q: number, gain: number, attack = 0.002): void {
-  if (!ctx) return;
+  if (!ctx || !sfxOn) return;
   const n = ctx.sampleRate * dur;
   const buf = ctx.createBuffer(1, n, ctx.sampleRate);
   const d = buf.getChannelData(0);

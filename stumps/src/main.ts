@@ -1,57 +1,36 @@
-// Stumps: chase a target in a short match. Tap where you want the ball to go, as it arrives.
-// Batting: shot chosen from the tap + the ball's length, bat swung on an arc through the ball,
-// continuous bat-ball collision. Then fielders try to stop it or catch it.
+// Stumps: tap where you want the ball to go, as it arrives. The batting engine picks the stroke,
+// swings the bat through the ball and the fielders do the rest. This file runs the loop and
+// wires the gameplay to the 3D view (render3d), the HUD and the menus (ui).
 import Phaser from 'phaser';
+import './ui/ui.css';
 import { BallSample, BatPose, bowl, Contact, Delivery, findContact, Flight, fly, hitsStumps, makeDelivery, sampleAt, Swing, timeAtZ } from './batting/physics';
 import { Shot } from './batting/shots';
 import { Band, idealTap, planShot } from './batting/plan';
-import { BAT } from './batting/tuning';
 import { batter, Skeleton } from './batting/body';
-import { Cam, VH, VW } from './render';
+import { Cam } from './render';
 import { World3D } from './render3d/world3d';
 import { lerp, v, V } from './batting/vec';
 import { field, FIELD, fielderPos, FieldResult } from './fielding';
-import { Ad, DEFAULT_ADS, loadAds } from './ads';
-import { audioStart, setMusic, sfx, startAmbience } from './audio';
+import { DEFAULT_ADS, loadAds } from './ads';
+import { audioStart, setMusic, setSfx, sfx, startAmbience } from './audio';
+import { Match, store, TEAMS } from './ui/match';
+import { Hud } from './ui/hud';
+import { Screens, Settings } from './ui/screens';
+import { readPad } from './input';
 
-const LEAD = BAT.LEAD; // tap -> bat on the ball (the downswing)
 const RUNUP = 1.3;
-const PERFECT = BAT.PERFECT;
-const GOOD = BAT.GOOD;
-const TEAMS = [
-  { name: 'Indus Tigers', kit: 0x0f8a4c },
-  { name: 'Thames Royals', kit: 0x1d4ed8 },
-  { name: 'Harbour Hawks', kit: 0xf59e0b },
-  { name: 'Desert Falcons', kit: 0xb91c1c },
-  { name: 'Island Cyclones', kit: 0x7c3aed },
-  { name: 'Savanna Storm', kit: 0x0e7490 },
-];
-const hex = (n: number) => '#' + n.toString(16).padStart(6, '0');
-
-type Phase = 'menu' | 'runup' | 'ball' | 'result' | 'over';
-interface Match {
-  team: number;
-  opp: number;
-  overs: number;
-  diff: number;
-  target: number;
-  runs: number;
-  wkts: number;
-  maxW: number;
-  balls: number;
-  last: string[];
-}
-
-const overlay = document.getElementById('ui')!;
-const musicBtn = document.getElementById('music') as HTMLButtonElement;
-let musicOn = true;
+const LOFT_DIST = 64;
+const LENGTHS: Record<string, string> = { yorker: 'Yorker', full: 'Full', good: 'Good length', short: 'Short', bouncer: 'Bouncer' };
+const CAMS = { broadcast: { pos: v(-0.9, 3.9, -7.4), look: v(0, -0.6, 14), zoom: 760 / 540 }, close: { pos: v(-0.7, 2.5, -4.4), look: v(0, 0.1, 12), zoom: 700 / 540 } };
+type Phase = 'menu' | 'intro' | 'runup' | 'ball' | 'result' | 'over';
 
 class Game extends Phaser.Scene {
   private g!: Phaser.GameObjects.Graphics;
-  private ui!: Phaser.GameObjects.Graphics;
   private cam = new Cam();
   private phase: Phase = 'menu';
+  private paused = false;
   private t = 0;
+  private clock = 0;
   private d!: Delivery;
   private path!: BallSample[];
   private T = 0;
@@ -60,6 +39,7 @@ class Game extends Phaser.Scene {
   private shot: Shot | null = null;
   private tapT: number | null = null;
   private band: Band = 'Off';
+  private errMs = 0;
   private lofted = false;
   private prevPose: BatPose | null = null;
   private contact: Contact | null = null;
@@ -67,116 +47,132 @@ class Game extends Phaser.Scene {
   private fres: FieldResult | null = null;
   private behind: boolean | null = null; // edge to the keeper: caught?
   private target: V | null = null;
+  private hover: V | null = null;
   private bowled = false;
   private settled = false;
   private skel!: Skeleton;
-  private m: Match = { team: 0, opp: 1, overs: 2, diff: 1, target: 0, runs: 0, wkts: 0, maxW: 3, balls: 0, last: [] };
-  private texts: Record<string, Phaser.GameObjects.Text> = {};
+  private m = new Match();
   private world: World3D | null = null;
-  private lastRect = '';
-  private ads: Ad[] = DEFAULT_ADS;
+  private hud!: Hud;
+  private screens!: Screens;
   private r = Math.random;
-  private padPrev: boolean[] = [];
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
+  private padAim: number | null = null;
 
   create(): void {
     this.g = this.add.graphics();
-    this.ui = this.add.graphics();
-    this.cam.update();
-    const style = (size: number, color = '#ffffff') => ({ fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: `${size}px`, color, fontStyle: '800', stroke: '#000000', strokeThickness: 4 });
-    this.texts.score = this.add.text(16, 12, '', style(22));
-    this.texts.need = this.add.text(16, 42, '', style(16, '#ffd166'));
-    this.texts.last = this.add.text(16, 66, '', style(15));
-    this.texts.shot = this.add.text(VW / 2, 70, '', style(30, '#ffd166')).setOrigin(0.5);
-    this.texts.detail = this.add.text(VW / 2, 108, '', style(17)).setOrigin(0.5);
-    this.texts.timing = this.add.text(VW / 2, VH - 64, '', style(18)).setOrigin(0.5);
-    this.texts.help = this.add.text(VW / 2, VH - 20, 'Tap where you want it as the ball arrives · tap the crowd to loft it · green on the meter = perfect', style(13, '#e8eef2')).setOrigin(0.5);
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.tap(this.cam.ground(p.x, p.y)));
+    this.hud = new Hud(document.getElementById('hud')!);
+    this.screens = new Screens(document.getElementById('ui')!, this.m, {
+      play: () => this.start(),
+      resume: () => this.setPaused(false),
+      restart: () => {
+        this.paused = false;
+        this.start();
+      },
+      quit: () => {
+        this.paused = false;
+        this.toMenu();
+      },
+      settingsChanged: (s) => this.applySettings(s),
+    });
+    this.applySettings(this.screens.settings);
+    this.scale.on('resize', () => this.fit());
+    this.fit();
+    // input: touch / mouse
+    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if ((p.event as PointerEvent | undefined)?.pointerType === 'mouse' || !p.wasTouch) this.hover = this.cam.ground(p.x, p.y);
+    });
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.press(this.cam.ground(p.x, p.y)));
+    this.hud.pause.addEventListener('click', () => this.setPaused(true));
+    // keyboard
     const kb = this.input.keyboard!;
     this.keys = kb.addKeys('LEFT,RIGHT,UP,DOWN,SPACE,SHIFT') as Record<string, Phaser.Input.Keyboard.Key>;
-    kb.on('keydown-SPACE', () => this.tap(this.aimFromKeys()));
-    kb.on('keydown-ENTER', () => (overlay.querySelector('#go, #again') as HTMLButtonElement | null)?.click());
+    kb.on('keydown', (e: KeyboardEvent) => this.key(e));
+    document.addEventListener('visibilitychange', () => document.hidden && this.inPlay() && this.setPaused(true));
     (window as unknown as { __scene: unknown }).__scene = this; // test hook
     const canvas = this.game.canvas;
     World3D.create(document.getElementById('world')!, () => canvas.getBoundingClientRect()).then((w) => {
       this.world = w;
-      w.setAds(this.ads);
-      loadAds().then((a) => {
-        this.ads = a;
-        w.setAds(a);
-      });
+      w.setAds(DEFAULT_ADS);
+      loadAds().then((a) => w.setAds(a));
       w.setTeams(TEAMS[this.m.team].kit, TEAMS[this.m.opp].kit);
+      w.setQuality(this.screens.settings.quality);
+      document.getElementById('boot')?.classList.add('gone');
     });
     this.d = makeDelivery(this.r);
     this.path = bowl(this.d);
     this.T = timeAtZ(this.path, 1.2);
-    this.menu();
+    this.toMenu();
   }
 
-  // ---------------------------------------------------------------- menus
-  private menu(): void {
+  private fit(): void {
+    this.cam.setViewport(this.scale.width, this.scale.height);
+    this.world?.resize();
+  }
+
+  private applySettings(s: Settings): void {
+    setMusic(s.music && this.phase !== 'menu');
+    setSfx(s.sfx);
+    this.world?.setQuality(s.quality);
+    this.cam.zoom = CAMS[s.camera].zoom;
+    this.fit();
+  }
+
+  private inPlay(): boolean {
+    return this.phase === 'runup' || this.phase === 'ball' || this.phase === 'result';
+  }
+
+  private setPaused(on: boolean): void {
+    if (on === this.paused || (on && !this.inPlay())) return;
+    this.paused = on;
+    if (on) this.screens.pause();
+    else this.screens.hide();
+    this.hud.show(!on);
+  }
+
+  // ---------------------------------------------------------------- flow
+  private toMenu(): void {
     this.phase = 'menu';
-    const m = this.m;
-    const opt = (k: 'overs' | 'diff', vals: [number, string][]) => vals.map(([val, l]) => `<button data-k="${k}" data-v="${val}" class="${m[k] === val ? 'on' : ''}">${l}</button>`).join('');
-    overlay.innerHTML = `<div class="card"><h1>STUMPS</h1><p class="sub">Tap where you want it. Time it in the green for SIX.</p>
-      <div class="row"><button id="tp">‹</button><b style="color:${hex(TEAMS[m.team].kit)}">${TEAMS[m.team].name}</b><button id="tn">›</button></div>
-      <div class="row small">vs <b>${TEAMS[m.opp].name}</b></div>
-      <div class="row">${opt('overs', [[1, '1 over'], [2, '2 overs'], [5, '5 overs']])}</div>
-      <div class="row">${opt('diff', [[0, 'Club'], [1, 'Pro'], [2, 'Legend']])}</div>
-      <button id="go" class="go">BAT ›</button>
-      <p class="help">Tap / click the ground where you want the ball to go, as it arrives. Tap the crowd for a lofted shot.<br>PS5: aim with the stick, ✕ along the ground, □ lofted · Keyboard: arrows + Space, hold Shift to loft</p></div>`;
-    overlay.hidden = false;
-    overlay.querySelectorAll<HTMLButtonElement>('[data-k]').forEach((b) =>
-      b.addEventListener('click', () => {
-        (m as unknown as Record<string, number>)[b.dataset.k!] = Number(b.dataset.v);
-        this.menu();
-      }),
-    );
-    const pick = (dd: number) => {
-      m.team = (m.team + dd + TEAMS.length) % TEAMS.length;
-      if (m.opp === m.team) m.opp = (m.team + 1) % TEAMS.length;
-      this.menu();
-    };
-    overlay.querySelector('#tp')!.addEventListener('click', () => pick(-1));
-    overlay.querySelector('#tn')!.addEventListener('click', () => pick(1));
-    overlay.querySelector('#go')!.addEventListener('click', () => this.start());
+    this.hud.show(false);
+    this.world?.setAim(null, false, false);
+    setMusic(false);
+    this.screens.title();
   }
 
   private start(): void {
     this.world?.setTeams(TEAMS[this.m.team].kit, TEAMS[this.m.opp].kit);
     audioStart();
     startAmbience();
-    setMusic(musicOn);
-    const m = this.m;
-    m.target = Math.round(m.overs * 6 * (1.55 + m.diff * 0.25 + this.r() * 0.3)) + 1;
-    m.runs = m.wkts = m.balls = 0;
-    m.maxW = m.overs === 5 ? 5 : m.overs === 2 ? 3 : 2;
-    m.last = [];
-    overlay.hidden = true;
-    this.next();
+    setMusic(this.screens.settings.music);
+    this.m.start(this.r);
+    this.phase = 'intro';
+    this.resetBall();
+    this.screens.intro(() => {
+      this.screens.hide();
+      this.hud.show(true);
+      this.hud.score(this.m);
+      this.next();
+    });
   }
 
   private finish(): void {
-    const m = this.m;
-    const won = m.runs >= m.target;
-    const tied = !won && m.runs === m.target - 1;
     this.phase = 'over';
-    overlay.innerHTML = `<div class="card"><h1>${won ? 'YOU WIN' : tied ? 'TIED' : 'YOU LOSE'}</h1>
-      <p class="sub">${won ? `${TEAMS[m.team].name} win with ${m.overs * 6 - m.balls} balls to spare` : tied ? 'Scores level' : `${TEAMS[m.opp].name} win by ${m.target - 1 - m.runs} runs`}</p>
-      <p class="big">${m.runs}/${m.wkts} · target ${m.target}</p><button id="again" class="go">PLAY AGAIN ›</button> <button id="menu">Menu</button></div>`;
-    overlay.hidden = false;
-    overlay.querySelector('#again')!.addEventListener('click', () => this.start());
-    overlay.querySelector('#menu')!.addEventListener('click', () => this.menu());
+    this.hud.show(false);
+    this.world?.setAim(null, false, false);
+    this.screens.result(() => this.start());
   }
 
-  // ---------------------------------------------------------------- ball by ball
-  private aimFromKeys(): V {
-    const k = this.keys;
-    const dx = (k.RIGHT.isDown ? 1 : 0) - (k.LEFT.isDown ? 1 : 0);
-    const dy = (k.UP.isDown ? 1 : 0) - (k.DOWN.isDown ? 1 : 0);
-    const a = dx || dy ? Math.atan2(dx, dy) : 0;
-    const dist = k.SHIFT.isDown ? 90 : 50;
-    return v(Math.sin(a) * dist, 0, Math.cos(a) * dist);
+  private resetBall(): void {
+    this.swing = this.shot = this.contact = this.flight = this.fres = null;
+    this.behind = null;
+    this.tapT = null;
+    this.prevPose = null;
+    this.target = null;
+    this.bowled = this.settled = false;
+    const c = CAMS[this.screens.settings.camera];
+    this.cam.pos = { ...c.pos };
+    this.cam.look = { ...c.look };
+    this.cam.update();
   }
 
   private next(): void {
@@ -186,51 +182,101 @@ class Game extends Phaser.Scene {
     this.path = bowl(this.d);
     this.T = timeAtZ(this.path, 1.2);
     this.tIdeal = idealTap(this.d, this.path);
-    this.swing = this.shot = this.contact = this.flight = this.fres = null;
-    this.behind = null;
-    this.tapT = null;
-    this.prevPose = null;
-    this.target = null;
-    this.bowled = this.settled = false;
-    this.cam.pos = v(-0.9, 3.9, -7.4);
-    this.cam.look = v(0, -0.6, 14);
-    this.cam.update();
-    for (const k of ['shot', 'detail', 'timing']) this.texts[k].setText('');
+    this.resetBall();
+    this.hud.clearFeedback();
+    const first = !store.get('played', false);
+    this.hud.setHint(first && this.m.balls < 3 ? ['Tap the field where you want to hit it, as the ball arrives', 'Tap when the white line is in the green', 'Turn on LOFT to hit it in the air'][this.m.balls] : '');
   }
 
   private ballTime(): number {
     return this.phase === 'runup' ? this.t - RUNUP : this.phase === 'ball' ? this.t : 99;
   }
 
-  /** The tap: pick the shot for that spot and this ball, and start the downswing now. */
-  private tap(target: V): void {
+  private isLofted(p: V): boolean {
+    return this.hud.loftOn || this.keys?.SHIFT.isDown || Math.hypot(p.x, p.z) > LOFT_DIST;
+  }
+
+  /** A tap/click/button: hit if the ball is coming, skip the replay if it's over. */
+  private press(target: V): void {
+    if (this.paused) return;
+    if (this.phase === 'result' && this.t > 0.7) return this.advance();
+    this.hit(target);
+  }
+
+  /** The hit: pick the shot for that spot and this ball, start the downswing now. */
+  private hit(target: V): void {
     const bt = this.ballTime();
     if (this.phase !== 'ball' || this.tapT !== null || bt < 0.05 || bt > this.T + 0.05) return;
+    const lofted = this.isLofted(target);
     const aim = Math.atan2(target.x, target.z);
     const dist = Math.hypot(target.x, target.z);
-    const plan = planShot(aim, dist, dist > 64, this.d, this.path, bt, this.r);
-    const shot = plan.shot;
+    const plan = planShot(aim, lofted ? Math.max(dist, 70) : Math.min(dist, LOFT_DIST - 1), lofted, this.d, this.path, bt, this.r);
     this.swing = plan.swing;
-    this.shot = shot;
+    this.shot = plan.shot;
     this.tapT = bt;
     this.prevPose = this.skel?.bat ?? null;
     this.target = target;
-    const ms = Math.round(plan.err * 1000);
-    const band = plan.band;
-    this.band = band;
+    this.band = plan.band;
     this.lofted = plan.lofted;
-    const label = band === 'Miss' ? (Math.abs(plan.err) <= BAT.WINDOW ? 'Out of reach' : ms < 0 ? 'Way too early' : 'Way too late') : band;
-    this.texts.timing.setText(`${label} · ${ms === 0 ? 'on time' : ms < 0 ? `${-ms} ms early` : `${ms} ms late`}`).setColor(band === 'PERFECT' ? '#7CFC8A' : band === 'Good' ? '#ffd166' : '#ff7b7b');
-    this.texts.shot.setText(shot.name.toUpperCase()).setColor('#ffd166');
+    this.errMs = Math.round(plan.err * 1000);
+    this.hud.timing(plan.band, this.errMs);
+    this.hud.setChip(plan.shot.name.toUpperCase());
+    this.hud.setHint('');
   }
 
-  /** Timing pays: perfect + lofted = six, perfect along the ground = four, good = four in the air. */
+  private key(e: KeyboardEvent): void {
+    const k = e.key;
+    if (!this.screensHidden()) {
+      const dir = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', Enter: 'press', ' ': 'press' }[k] as 'up' | 'down' | 'left' | 'right' | 'press' | undefined;
+      if (k === 'Escape' && this.paused) return this.setPaused(false);
+      if (dir && this.screens.nav(dir)) e.preventDefault();
+      return;
+    }
+    if (k === 'Escape' || k === 'p' || k === 'P') return this.setPaused(true);
+    if (k === ' ') this.press(this.aimFromKeys());
+    if (k === 'l' || k === 'L') this.hud.setLoft(!this.hud.loftOn);
+  }
+
+  private screensHidden(): boolean {
+    return (document.getElementById('ui') as HTMLElement).hidden;
+  }
+
+  private aimFromKeys(): V {
+    const k = this.keys;
+    const dx = (k.RIGHT.isDown ? 1 : 0) - (k.LEFT.isDown ? 1 : 0);
+    const dy = (k.UP.isDown ? 1 : 0) - (k.DOWN.isDown ? 1 : 0);
+    const a = dx || dy ? Math.atan2(dx, dy) : 0;
+    const dist = this.isLofted(v(0, 0, 0)) ? 80 : 45;
+    return v(Math.sin(a) * dist, 0, Math.cos(a) * dist);
+  }
+
+  private pollPad(): void {
+    const p = readPad();
+    if (!p.connected) return;
+    this.padAim = p.aim;
+    if (!this.screensHidden()) {
+      const map: [number, 'up' | 'down' | 'left' | 'right' | 'press'][] = [[12, 'up'], [13, 'down'], [14, 'left'], [15, 'right'], [0, 'press']];
+      for (const [b, d] of map) if (p.pressed.has(b)) this.screens.nav(d);
+      if ((p.pressed.has(9) || p.pressed.has(1)) && this.paused) this.setPaused(false);
+      return;
+    }
+    if (p.pressed.has(9)) return this.setPaused(true);
+    const lofted = p.held.has(2) || p.held.has(5) || p.held.has(7) || this.hud.loftOn;
+    if (p.pressed.has(0) || p.pressed.has(2)) {
+      const a = p.aim ?? 0;
+      const dist = lofted ? 80 : 45;
+      this.press(v(Math.sin(a) * dist, 0, Math.cos(a) * dist));
+    }
+  }
+
+  // ---------------------------------------------------------------- outcomes
+  /** Timing pays: perfect + lofted = six, perfect along the ground = four, good = four. */
   private reward(c: Contact): Flight {
     let f = fly(c.p, c.out);
     if (this.band === 'Off' || this.band === 'Miss' || c.quality === 'edge') return f;
     const want = this.band === 'PERFECT' && this.lofted ? 6 : 4;
     let out = { ...c.out };
-    if (want === 6 && out.y < 9) out.y = 9; // get it up
+    if (want === 6 && out.y < 9) out.y = 9;
     for (let i = 0; i < 12 && (f.boundary ?? 0) < want; i++) {
       out = { x: out.x * 1.08, y: want === 6 ? out.y * 1.05 : Math.min(out.y, 2), z: out.z * 1.08 };
       f = fly(c.p, out);
@@ -241,51 +287,55 @@ class Game extends Phaser.Scene {
 
   private boundaryResult(f: Flight): FieldResult {
     const i = Math.max(0, f.path.findIndex((s) => Math.hypot(s.p.x, s.p.z) >= 65));
-    const at = f.path[i].p;
-    return { kind: f.boundary === 6 ? 'six' : 'four', fielder: null, t: f.path[i].t - f.path[0].t, runs: f.boundary!, at };
+    return { kind: f.boundary === 6 ? 'six' : 'four', fielder: null, t: f.path[i].t - f.path[0].t, runs: f.boundary!, at: f.path[i].p };
   }
 
-  private pollPad(): void {
-    const gp = navigator.getGamepads?.().find((x) => x && x.connected);
-    if (!gp) return;
-    const b = gp.buttons.map((x) => x.pressed);
-    const ax = gp.axes[0] ?? 0;
-    const ay = gp.axes[1] ?? 0;
-    const a = Math.hypot(ax, ay) > 0.3 ? Math.atan2(ax, -ay) : 0;
-    const lofted = b[2] || b[5] || b[7];
-    if ((b[0] && !this.padPrev[0]) || (b[2] && !this.padPrev[2])) {
-      if (this.phase === 'menu' || this.phase === 'over') (overlay.querySelector('#go, #again') as HTMLButtonElement | null)?.click();
-      else this.tap(v(Math.sin(a) * (lofted ? 90 : 50), 0, Math.cos(a) * (lofted ? 90 : 50)));
-    }
-    this.padPrev = b;
-  }
-
-  private record(runs: number, out: boolean, label: string, color = '#ffffff'): void {
-    const m = this.m;
-    m.balls++;
-    m.runs += runs;
-    if (out) m.wkts++;
-    m.last = [...m.last, out ? 'W' : runs ? String(runs) : '•'].slice(-6);
-    this.texts.shot.setText(label).setColor(color);
+  private record(runs: number, out: boolean, how: string): void {
+    const f = this.flight;
+    const end = this.fres?.at ?? (f ? f.path[f.path.length - 1].p : null);
+    this.m.log.push({
+      runs,
+      out,
+      how,
+      shot: this.shot?.name ?? null,
+      band: this.tapT === null ? null : this.band,
+      errMs: this.tapT === null ? null : this.errMs,
+      dist: end ? Math.hypot(end.x, end.z) : 0,
+      angle: end && this.contact ? Math.atan2(end.x, end.z) : null,
+    });
+    const kind = out ? 'out' : runs === 6 ? 'six' : runs === 4 ? 'four' : runs ? 'runs' : 'dot';
+    const big = out ? how : runs === 6 ? 'SIX!' : runs === 4 ? 'FOUR!' : runs ? `${runs} RUN${runs > 1 ? 'S' : ''}` : how;
+    const dist = end && this.contact && runs >= 4 ? ` · ${Math.round(Math.hypot(end.x, end.z))} m` : '';
+    const small = out ? (this.shot ? this.shot.name : '') : this.shot ? `${this.shot.name}${dist}` : '';
+    this.hud.bannerShow(big, small.toUpperCase(), kind);
     if (out) sfx.crowd(false);
     if (runs >= 4) sfx.crowd(runs === 6);
+    this.hud.score(this.m);
     this.phase = 'result';
     this.t = 0;
   }
 
+  private advance(): void {
+    store.set('played', true);
+    if (this.m.done()) this.finish();
+    else this.next();
+  }
+
+  // ---------------------------------------------------------------- loop
   update(_: number, deltaMs: number): void {
     const dt = Math.min(0.05, deltaMs / 1000);
-    this.t += dt;
+    this.clock += dt;
     this.pollPad();
-    const rc = this.game.canvas.getBoundingClientRect();
-    const key = `${rc.left},${rc.top},${rc.width},${rc.height}`;
-    if (key !== this.lastRect && this.world) {
-      this.lastRect = key;
-      this.world.resize();
-    }
+    if (!this.paused) this.step(dt);
+    this.view(dt);
+  }
+
+  private step(dt: number): void {
+    this.t += dt;
     if (this.phase === 'runup' && this.t >= RUNUP) {
       this.phase = 'ball';
       this.t = 0;
+      this.hud.setChip(`${Math.round(this.d.speed * 3.6)} km/h · ${LENGTHS[this.d.length]}`);
     }
     const bt = this.ballTime();
     if (this.phase === 'ball' && this.swing && !this.contact) {
@@ -295,12 +345,10 @@ class Game extends Phaser.Scene {
         this.flight = this.reward(c);
         sfx.bat(c.quality === 'middle' ? 1 : 0.4);
         if (c.quality === 'edge') sfx.edge();
-        // thin edge going back toward the keeper and slips
         if (c.quality === 'edge' && c.out.z < 2 && this.flight.maxH < 2.2) this.behind = this.r() < 0.6;
         else this.fres = this.flight.boundary && (this.band === 'PERFECT' || this.band === 'Good') ? this.boundaryResult(this.flight) : field(this.flight, this.r);
-        const kmh = Math.round(Math.hypot(c.out.x, c.out.y, c.out.z) * 3.6);
-        const q = { middle: 'Middled', toe: 'Off the toe', splice: 'Off the splice', edge: 'Edged' }[c.quality];
-        this.texts.detail.setText(`${q} · ${kmh} km/h off the bat`);
+        const q = { middle: 'MIDDLED', toe: 'OFF THE TOE', splice: 'OFF THE SPLICE', edge: 'EDGED' }[c.quality];
+        this.hud.setChip(`${this.shot!.name.toUpperCase()} · ${q} · ${Math.round(Math.hypot(c.out.x, c.out.y, c.out.z) * 3.6)} km/h`);
       }
     }
     if (this.phase === 'ball' && !this.settled) {
@@ -308,23 +356,18 @@ class Game extends Phaser.Scene {
         this.settled = true;
         this.bowled = hitsStumps(this.path, this.tapT ?? 0);
         if (this.bowled) sfx.stumps();
-        this.record(0, this.bowled, this.bowled ? 'BOWLED!' : this.tapT === null ? 'Left alone' : 'Beaten', this.bowled ? '#ff6b6b' : '#ffffff');
+        this.record(0, this.bowled, this.bowled ? 'BOWLED!' : this.tapT === null ? 'LEFT ALONE' : 'BEATEN');
       } else if (this.contact && this.behind !== null && bt > this.contact.t + 0.5) {
         this.settled = true;
-        this.record(this.behind ? 0 : 1, this.behind, this.behind ? 'CAUGHT BEHIND!' : 'Edged for 1', this.behind ? '#ff6b6b' : '#ffffff');
+        this.record(this.behind ? 0 : 1, this.behind, this.behind ? 'CAUGHT BEHIND!' : 'EDGED');
       } else if (this.contact && this.fres && bt > this.contact.t + Math.min(this.fres.t, 4) + 0.5) {
         this.settled = true;
         const f = this.fres;
-        const label = f.kind === 'six' ? 'SIX!' : f.kind === 'four' ? 'FOUR!' : f.kind === 'caught' ? `CAUGHT! (${FIELD[f.fielder!].name})` : f.kind === 'dropped' ? 'DROPPED! 1 run' : `${f.runs} run${f.runs === 1 ? '' : 's'}`;
-        this.record(f.runs, f.kind === 'caught', label, f.kind === 'caught' ? '#ff6b6b' : f.runs >= 4 ? '#ffd166' : '#ffffff');
+        this.record(f.runs, f.kind === 'caught', f.kind === 'caught' ? 'CAUGHT!' : f.kind === 'dropped' ? 'DROPPED!' : `${f.runs}`);
       }
     }
-    if (this.phase === 'result' && this.t > 2.3) {
-      const m = this.m;
-      if (m.runs >= m.target || m.wkts >= m.maxW || m.balls >= m.overs * 6) this.finish();
-      else this.next();
-    }
-    // camera follows a struck ball, then returns behind the batter
+    if (this.phase === 'result' && this.t > 2.4) this.advance();
+    // camera follows a struck ball
     if (this.contact && this.flight && bt > this.contact.t + 0.35 && this.behind === null) {
       const b = this.ballPos(bt);
       if (b) {
@@ -334,9 +377,6 @@ class Game extends Phaser.Scene {
         this.cam.update();
       }
     }
-    const tb = this.phase === 'menu' || this.phase === 'over' ? -2 : bt === 99 ? Math.min(this.T + 1.2, (this.contact?.t ?? this.T) + 0.8) : bt;
-    this.skel = batter({ delivery: this.phase === 'runup' && this.t < 0.1 ? null : this.d, path: this.path, t: tb, T: this.T, swing: this.swing, prevPose: this.prevPose, tapT: this.tapT });
-    this.draw(bt, dt);
   }
 
   private ballPos(bt: number): V | null {
@@ -353,108 +393,46 @@ class Game extends Phaser.Scene {
     return null;
   }
 
-  private draw(bt: number, dt: number): void {
-    const g = this.g;
-    const c = this.cam;
-    g.clear();
+  private view(dt: number): void {
+    const bt = this.ballTime();
+    const menuish = this.phase === 'menu' || this.phase === 'over' || this.phase === 'intro';
+    if (menuish) {
+      // slow orbit round the ground behind the menus
+      const a = this.clock * 0.06;
+      this.cam.pos = v(Math.sin(a) * 34, 12, 10 + Math.cos(a) * 34);
+      this.cam.look = v(0, 0.5, 8);
+      this.cam.update();
+    }
+    const tb = menuish ? -2 : bt === 99 ? Math.min(this.T + 1.2, (this.contact?.t ?? this.T) + 0.8) : bt;
+    this.skel = batter({ delivery: menuish || (this.phase === 'runup' && this.t < 0.1) ? null : this.d, path: this.path, t: tb, T: this.T, swing: this.swing, prevPose: this.prevPose, tapT: this.tapT });
     const bz = this.phase === 'runup' ? 20.12 + 9 * (1 - this.t / RUNUP) + 0.6 : 20.12 + 0.6 - Math.min(2, Math.max(0, bt) * 3);
     const ft = this.contact ? (this.phase === 'result' ? Math.min(this.fres?.t ?? 1, 4) + this.t : bt - this.contact.t) : 0;
-    const ball = this.phase === 'runup' || this.phase === 'menu' || this.phase === 'over' ? null : this.ballPos(this.phase === 'result' && this.contact ? this.contact.t + ft : bt);
+    const ball = menuish || this.phase === 'runup' ? null : this.ballPos(this.phase === 'result' && this.contact ? this.contact.t + ft : bt);
+    const fielders = FIELD.map((_, k) => fielderPos(k, this.contact ? this.fres : null, ft, ball));
     if (this.world) {
-      const fielders = FIELD.map((_, k) => fielderPos(k, this.contact ? this.fres : null, ft, ball));
-      const bphase = this.phase === 'runup' ? (this.t < RUNUP - 0.45 ? 'run' : 'bowl') : this.phase === 'ball' && bt < 0.5 ? 'bowl' : this.phase === 'menu' || this.phase === 'over' ? 'idle' : 'follow';
+      const bphase = this.phase === 'runup' ? (this.t < RUNUP - 0.45 ? 'run' : 'bowl') : this.phase === 'ball' && bt < 0.5 ? 'bowl' : menuish ? 'idle' : 'follow';
       const look = this.phase === 'runup' ? v(0.4, 2, bz) : ball;
-      this.world.frame(c, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(0.75, 0, -2.3), bowler: { z: bz, phase: bphase }, bowled: this.bowled && this.phase === 'result' }, dt);
+      // aim ring: the mouse hover / pad stick before the hit, the chosen spot after it
+      const padTarget = this.padAim !== null ? v(Math.sin(this.padAim) * 45, 0, Math.cos(this.padAim) * 45) : null;
+      const aim = menuish ? null : this.target && !this.contact ? this.target : !this.target && (this.phase === 'runup' || this.phase === 'ball') ? (padTarget ?? this.hover) : null;
+      this.world.setAim(aim, aim ? this.isLofted(aim) : false, !!this.target);
+      this.world.frame(this.cam, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(0.75, 0, -2.3), bowler: { z: menuish ? 26 : bz, phase: menuish ? 'idle' : bphase }, bowled: this.bowled && this.phase === 'result' }, dt);
     }
-    if (this.target && !this.contact) {
-      const p = c.p(v(this.target.x, 0, Math.min(this.target.z, 120)));
-      g.lineStyle(3, 0xffd166, 0.9);
-      g.lineBetween(p.x - 8, p.y - 5, p.x + 8, p.y + 5);
-      g.lineBetween(p.x - 8, p.y + 5, p.x + 8, p.y - 5);
+    if (!menuish) {
+      const live = this.phase === 'runup' || this.phase === 'ball';
+      this.hud.meter(live ? bt - this.tIdeal : null, this.tapT === null ? null : this.tapT - this.tIdeal, live || (this.phase === 'result' && this.t < 0.8));
+      const trail = this.flight && this.contact ? this.flight.path.slice(0, Math.max(1, Math.floor(ft * 120))).filter((_, i) => i % 6 === 0).map((s) => s.p) : null;
+      this.hud.drawMap(this.m, { fielders, trail }, TEAMS[this.m.opp].kit);
     }
-    this.drawMeter(bt);
-    this.drawMap(ft);
-    const m = this.m;
-    const show = this.phase !== 'menu';
-    this.texts.score.setText(show ? `${TEAMS[m.team].name.split(' ')[0].toUpperCase()}  ${m.runs}/${m.wkts}  (${Math.floor(m.balls / 6)}.${m.balls % 6} ov)` : '');
-    this.texts.need.setText(show && m.target ? (m.runs >= m.target ? 'Target reached' : `Need ${m.target - m.runs} from ${m.overs * 6 - m.balls}`) : '');
-    this.texts.last.setText(show ? m.last.join('  ') : '');
-  }
-
-  private drawMeter(bt: number): void {
-    const u = this.ui;
-    u.clear();
-    if (this.phase === 'menu' || this.phase === 'over') return;
-    const w = 420;
-    const x0 = VW / 2 - w / 2;
-    const y = VH - 46;
-    const span = 0.45;
-    const t0 = this.tIdeal - span / 2;
-    const X = (t: number) => x0 + Math.max(0, Math.min(1, (t - t0) / span)) * w;
-    u.fillStyle(0x000000, 0.55);
-    u.fillRoundedRect(x0 - 6, y - 10, w + 12, 20, 8);
-    u.fillStyle(0x555555, 0.9); // too early / too late: miss
-    u.fillRect(x0, y - 6, w, 12);
-    u.fillStyle(0xff6b6b, 0.95); // in reach but mistimed: 1-2 runs
-    u.fillRect(X(this.tIdeal - BAT.WINDOW), y - 6, X(this.tIdeal + BAT.WINDOW) - X(this.tIdeal - BAT.WINDOW), 12);
-    u.fillStyle(0xffd166, 1);
-    u.fillRect(X(this.tIdeal - GOOD), y - 6, X(this.tIdeal + GOOD) - X(this.tIdeal - GOOD), 12);
-    u.fillStyle(0x7cfc8a, 1);
-    u.fillRect(X(this.tIdeal - PERFECT), y - 6, X(this.tIdeal + PERFECT) - X(this.tIdeal - PERFECT), 12);
-    if (this.phase === 'ball' || this.phase === 'runup') {
-      u.fillStyle(0xffffff, 1);
-      u.fillRect(X(bt) - 2, y - 11, 4, 22);
-    }
-    if (this.tapT !== null) {
-      u.fillStyle(0x111111, 1);
-      u.fillTriangle(X(this.tapT) - 7, y - 16, X(this.tapT) + 7, y - 16, X(this.tapT), y - 6);
-    }
-  }
-
-  private drawMap(ft: number): void {
-    const u = this.ui;
-    if (this.phase === 'menu' || this.phase === 'over') return;
-    const cx = VW - 78;
-    const cy = 82;
-    const R = 62;
-    u.fillStyle(0x2f7a2c, 0.9);
-    u.fillCircle(cx, cy, R + 4);
-    u.lineStyle(2, 0xffffff, 0.9);
-    u.strokeCircle(cx, cy, R);
-    u.fillStyle(0xc9b07a, 1);
-    u.fillRect(cx - 2, cy - 9, 4, 18);
-    const P = (p: V) => ({ x: cx + (p.x / 66) * R, y: cy + 9 - (p.z / 66) * R });
-    for (let k = 0; k < FIELD.length; k++) {
-      const q = P(fielderPos(k, this.contact ? this.fres : null, ft, null));
-      u.fillStyle(TEAMS[this.m.opp].kit, 1);
-      u.fillCircle(q.x, q.y, 3);
-    }
-    if (this.flight && this.contact) {
-      const upto = ft * 120;
-      u.lineStyle(2, 0xffffff, 0.85);
-      u.beginPath();
-      this.flight.path.forEach((s, i) => {
-        if (i > upto) return;
-        const q = P(s.p);
-        if (i === 0) u.moveTo(q.x, q.y);
-        else u.lineTo(q.x, q.y);
-      });
-      u.strokePath();
-    }
+    this.g.clear();
   }
 }
-
-musicBtn.addEventListener('click', () => {
-  musicOn = !musicOn;
-  musicBtn.textContent = musicOn ? '♪ On' : '♪ Off';
-  setMusic(musicOn);
-});
 
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'app',
   transparent: true,
-  scale: { mode: Phaser.Scale.FIT, autoCenter: Phaser.Scale.CENTER_BOTH, width: VW, height: VH },
+  scale: { mode: Phaser.Scale.RESIZE, width: '100%', height: '100%' },
   render: { antialias: true },
   scene: Game,
 });

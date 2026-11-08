@@ -8,7 +8,7 @@ import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPa
 import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { Skeleton } from '../batting/body';
 import { V } from '../batting/vec';
-import { Cam, VH } from '../render';
+import { Cam } from '../render';
 import { Ad } from '../ads';
 import { Arena, createArena } from './arena';
 import { armour, makeBat, Person } from './people';
@@ -47,6 +47,9 @@ export class World3D {
   private ball: THREE.Mesh;
   private bowledShown = false;
   private composer: EffectComposer;
+  private bloom: UnrealBloomPass;
+  private aim: THREE.Mesh;
+  private aimT = 0;
   private constructor(public arena: Arena, private asset: PlayerAsset) {
     this.ball = new THREE.Mesh(new THREE.SphereGeometry(0.045, 16, 12), new THREE.MeshStandardMaterial({ color: 0xc8102e, roughness: 0.35 }));
     this.ball.castShadow = true;
@@ -56,8 +59,43 @@ export class World3D {
     const size = r.getDrawingBufferSize(new THREE.Vector2());
     this.composer = new EffectComposer(r, new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 }));
     this.composer.addPass(new RenderPass(arena.scene, arena.camera));
-    this.composer.addPass(new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.16, 0.45, 0.92));
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.16, 0.45, 0.92);
+    this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+    // aim marker: a glowing ring on the grass where you're pointing
+    this.aim = new THREE.Mesh(new THREE.RingGeometry(1.2, 1.6, 48), new THREE.MeshBasicMaterial({ color: 0xffd166, transparent: true, opacity: 0.85, depthWrite: false }));
+    this.aim.rotation.x = -Math.PI / 2;
+    this.aim.renderOrder = 2;
+    this.aim.visible = false;
+    arena.scene.add(this.aim);
+  }
+
+  /** Where the player is aiming (field coords), or null to hide. Lofted aims are orange and bigger. */
+  setAim(p: V | null, lofted: boolean, locked: boolean): void {
+    this.aim.visible = !!p;
+    if (!p) return;
+    const r = Math.hypot(p.x, p.z);
+    const k = r > 62 ? 62 / r : 1; // keep it inside the rope
+    this.aim.position.set(-p.x * k, 0.03, p.z * k);
+    const m = this.aim.material as THREE.MeshBasicMaterial;
+    m.color.set(locked ? 0xffffff : lofted ? 0xff8a3d : 0xffd166);
+    const s = (lofted ? 2.2 : 1.4) * (1 + 0.08 * Math.sin(this.aimT * 8)) * Math.max(1, r / 30);
+    this.aim.scale.setScalar(s);
+  }
+
+  /** 'low' for older phones: native pixel ratio 1, no bloom, smaller shadows. */
+  setQuality(q: 'high' | 'low'): void {
+    const r = this.arena.renderer;
+    r.setPixelRatio(q === 'low' ? 1 : Math.min(devicePixelRatio || 1, 2));
+    this.bloom.enabled = q === 'high';
+    const sz = q === 'low' ? 1024 : 2048;
+    const sh = this.arena.sun.shadow;
+    if (sh.mapSize.x !== sz) {
+      sh.mapSize.set(sz, sz);
+      sh.map?.dispose();
+      sh.map = null;
+    }
+    this.resize();
   }
 
   static async create(container: HTMLElement, rect: () => DOMRect): Promise<World3D> {
@@ -108,8 +146,8 @@ export class World3D {
     const { arena } = this;
     // camera = gameplay camera
     const cam = arena.camera;
-    cam.fov = (2 * Math.atan(VH / 2 / c.F) * 180) / Math.PI;
-    cam.aspect = 16 / 9;
+    cam.fov = (2 * Math.atan(c.h / 2 / c.F) * 180) / Math.PI;
+    cam.aspect = c.w / c.h;
     cam.position.copy(W(c.pos));
     cam.up.set(0, 1, 0);
     cam.lookAt(W(c.look));
@@ -148,6 +186,7 @@ export class World3D {
     this.bowledShown = v.bowled;
     arena.stumps.near.update(dt);
     arena.update(dt);
+    this.aimT += dt;
     this.composer.render(dt);
   }
 

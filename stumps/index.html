@@ -7,23 +7,15 @@
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <title>Stumps</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800;900&family=Inter:wght@500;600;700&display=swap" rel="stylesheet" />
+<meta name="theme-color" content="#0b1620" />
 <style>
   html, body { margin: 0; height: 100%; background: #0d1b12; overflow: hidden; touch-action: none; -webkit-user-select: none; user-select: none; overscroll-behavior: none; }
   #world { position: fixed; inset: 0; z-index: 0; }
   #world canvas { z-index: 0; }
   #app { position: fixed; inset: 0; z-index: 1; }
-  #ui { position: fixed; inset: 0; z-index: 5; display: grid; place-items: center; background: rgba(5,15,9,.72); overflow: auto; padding: 12px; box-sizing: border-box; }
-  #ui[hidden] { display: none; }
-  .card { background: #10261a; border: 2px solid #2e6b45; border-radius: 16px; padding: 16px 22px; color: #f6f3ea; font: 600 15px system-ui, sans-serif; text-align: center; max-width: 560px; }
-  .card h1 { margin: 0; font-size: 40px; letter-spacing: 4px; color: #ffd166; }
-  .card .sub { margin: 4px 0 10px; opacity: .85; } .card .big { font-size: 26px; font-weight: 800; }
-  .card .row { display: flex; gap: 8px; justify-content: center; align-items: center; margin: 8px 0; font-size: 18px; } .card .row.small { font-size: 14px; margin-top: -4px; }
-  .card button { background: #1d3d2a; color: #fff; border: 1px solid #3c7a55; border-radius: 10px; padding: 8px 14px; font: 700 15px system-ui, sans-serif; cursor: pointer; }
-  .card button.on { background: #ffd166; color: #10261a; border-color: #ffd166; }
-  .card button.go { background: #22c55e; color: #062; font-size: 20px; padding: 10px 34px; margin-top: 6px; border: 0; }
-  .card .help { font-size: 12px; opacity: .7; margin: 10px 0 0; }
-  #music { position: fixed; right: 10px; bottom: 10px; z-index: 6; background: rgba(0,0,0,.5); color: #fff; border: 1px solid #fff5; border-radius: 8px; padding: 5px 9px; font: 700 13px system-ui, sans-serif; }
-  @media (max-height: 420px) { .card { padding: 8px 14px; } .card h1 { font-size: 28px; } .card .row { margin: 4px 0; } .card .help { display: none; } }
   #rotate { display: none; position: fixed; inset: 0; z-index: 9; background: #0d1b12; color: #f6f3ea; font: 700 20px system-ui, sans-serif; text-align: center; place-items: center; padding: 24px; }
   @media (orientation: portrait) and (pointer: coarse) { #rotate { display: grid; } }
 </style>
@@ -31,8 +23,9 @@
 <body>
 <div id="world"></div>
 <div id="app"></div>
+<div id="hud"></div>
 <div id="ui" hidden></div>
-<button id="music">♪ On</button>
+<div id="boot"><div class="logo"><span class="logo-s">STUMPS</span><span class="logo-tag">loading the ground…</span></div></div>
 <div id="rotate"><div><div style="font-size:54px">⟳</div>Turn your phone sideways to bat</div></div>
 <script type="module" src="/src/main.ts"></script>
 </body>
