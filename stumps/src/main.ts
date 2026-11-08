@@ -21,7 +21,7 @@ import { readPad } from './input';
 const RUNUP = 1.3;
 const LOFT_DIST = 64;
 const LENGTHS: Record<string, string> = { yorker: 'Yorker', full: 'Full', good: 'Good length', short: 'Short', bouncer: 'Bouncer' };
-const CAMS = { broadcast: { pos: v(-0.9, 3.9, -7.4), look: v(0, -0.6, 14), zoom: 760 / 540 }, close: { pos: v(-0.7, 2.5, -4.4), look: v(0, 0.1, 12), zoom: 700 / 540 } };
+const CAMS = { broadcast: { pos: v(-0.5, 5.4, -10.5), look: v(0, -0.4, 14), zoom: 1010 / 540 }, close: { pos: v(-0.7, 2.5, -4.4), look: v(0, 0.1, 12), zoom: 700 / 540 } };
 type Phase = 'menu' | 'intro' | 'runup' | 'ball' | 'result' | 'replay' | 'over';
 
 class Game extends Phaser.Scene {
@@ -59,6 +59,7 @@ class Game extends Phaser.Scene {
   private keys!: Record<string, Phaser.Input.Keyboard.Key>;
   private padAim: number | null = null;
   private wantReplay = false;
+  private endBt = 0;
   private perf = { ms: 0, frames: 0, done: false };
   private rt = 0; // replay ball time
   private replayEnd = 0;
@@ -295,6 +296,7 @@ class Game extends Phaser.Scene {
   }
 
   private record(runs: number, out: boolean, how: string): void {
+    this.endBt = this.ballTime();
     const f = this.flight;
     const end = this.fres?.at ?? (f ? f.path[f.path.length - 1].p : null);
     this.m.log.push({
@@ -465,7 +467,7 @@ class Game extends Phaser.Scene {
       this.cam.look = v(0, 0.5, 8);
       this.cam.update();
     }
-    const tb = menuish ? -2 : bt === 99 ? Math.min(this.T + 1.2, (this.contact?.t ?? this.T) + 0.8) : bt;
+    const tb = menuish ? -2 : bt === 99 ? this.endBt + this.t : bt; // keep the batter's clock running after the ball (no frozen pose)
     this.skel = batter({ delivery: menuish || (this.phase === 'runup' && this.t < 0.1) ? null : this.d, path: this.path, t: tb, T: this.T, swing: this.swing, prevPose: this.prevPose, tapT: this.tapT });
     const bz = this.phase === 'runup' ? 20.12 + 9 * (1 - this.t / RUNUP) + 0.6 : 20.12 + 0.6 - Math.min(2, Math.max(0, bt) * 3);
     const ft = this.contact ? (this.phase === 'result' ? Math.min(this.fres?.t ?? 1, 4) + this.t : bt - this.contact.t) : 0;
@@ -478,7 +480,7 @@ class Game extends Phaser.Scene {
       const padTarget = this.padAim !== null ? v(Math.sin(this.padAim) * 45, 0, Math.cos(this.padAim) * 45) : null;
       const aim = menuish ? null : this.target && !this.contact ? this.target : !this.target && (this.phase === 'runup' || this.phase === 'ball') ? (padTarget ?? this.hover) : null;
       this.world.setAim(aim, aim ? this.isLofted(aim) : false, !!this.target);
-      this.world.frame(this.cam, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(0.75, 0, -2.3), bowler: { z: menuish ? 26 : bz, phase: menuish ? 'idle' : bphase, t: menuish ? null : bt }, bowled: this.bowled && (this.phase === 'result' || (this.phase === 'replay' && bt > this.T + 0.02)) }, dt);
+      this.world.frame(this.cam, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(1.0, 0, -3.0), bowler: { z: menuish ? 26 : bz, phase: menuish ? 'idle' : bphase, t: menuish ? null : bt }, bowled: this.bowled && (this.phase === 'result' || (this.phase === 'replay' && bt > this.T + 0.02)) }, dt);
     }
     if (!menuish) {
       const live = this.phase === 'runup' || this.phase === 'ball';

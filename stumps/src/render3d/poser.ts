@@ -70,7 +70,8 @@ export class BatterRig {
     this.setWorldQ(name, _q.clone());
   }
 
-  pose(sk: Skeleton, ball: V | null, free = false): void {
+  /** Returns the bat pose actually used (pulled back to the hands if the arms couldn't reach it). */
+  pose(sk: Skeleton, ball: V | null, free = false): BatPose {
     const { p, rest } = this;
     for (const [bone, rq] of rest.q) {
       bone.quaternion.copy(rq);
@@ -91,16 +92,32 @@ export class BatterRig {
     for (const [n, k] of spines) this.basis(n, rest.x, rest.y, hipX.clone().lerp(shX, k), up);
     // head on the ball
     p.look(ball ? W(ball) : W(sk.look), 1);
+    let bat = sk.bat;
     if (free) {
       // no bat (the bowler): arms by IK, elbows toward the given elbow points
       for (const [s, sh, el, ha] of [['l', sk.shL, sk.elL, sk.haL], ['r', sk.shR, sk.elR, sk.haR]] as const) p.reach(s, W(ha), W(el).sub(W(sh).add(W(ha)).multiplyScalar(0.5)));
     } else {
-    // hands: top (left) hand in front of the handle, bottom (right) hand behind it
-    const bat = sk.bat;
+    // hands: top (left) hand in front of the handle, bottom (right) hand behind it.
+    // This body's own arm length decides what's reachable: if the bat is out of reach, move the bat.
     const d = Wd(bat.d).normalize();
     const n = Wd(bat.n).normalize();
-    this.hand('l', W(sk.haL), d, n, 1, W(sk.elL).sub(W(sk.shL)));
-    this.hand('r', W(sk.haR), d, n, -1, W(sk.elR).sub(W(sk.shR)));
+    const B = p.m.bones;
+    const wpos = (nm: string) => B.get(nm)!.getWorldPosition(new THREE.Vector3());
+    for (let it = 0; it < 3; it++) {
+      for (const [sd, off, side] of [['l', 0.05, 1], ['r', 0.16, -1]] as const) {
+        const sh = wpos(`upperarm_${sd}`);
+        const len = sh.distanceTo(wpos(`lowerarm_${sd}`)) + wpos(`lowerarm_${sd}`).distanceTo(wpos(`hand_${sd}`));
+        const grip = W(bat.h).addScaledVector(d, off);
+        const wrist = grip.addScaledVector(n.clone().multiplyScalar(-side), -0.075).addScaledVector(d, -0.02);
+        const ex = sh.distanceTo(wrist) - len * 0.985;
+        if (ex > 0) {
+          const mv = sh.clone().sub(wrist).normalize().multiplyScalar(ex);
+          bat = { ...bat, h: { x: bat.h.x - mv.x, y: bat.h.y + mv.y, z: bat.h.z + mv.z } }; // world -> field (x mirrored)
+        }
+      }
+    }
+    this.hand('l', W(bat.h).addScaledVector(d, 0.05), d, n, 1, W(sk.elL).sub(W(sk.shL)));
+    this.hand('r', W(bat.h).addScaledVector(d, 0.16), d, n, -1, W(sk.elR).sub(W(sk.shR)));
     }
     // legs onto the feet, knees toward the engine's knees, feet pointing at the toes
     for (const [s, hip, knee, ft, toe] of [['l', sk.hipL, sk.knL, sk.ftL, sk.toeL], ['r', sk.hipR, sk.knR, sk.ftR, sk.toeR]] as const) {
@@ -108,6 +125,7 @@ export class BatterRig {
       p.step(s, W(ft), pole.lengthSq() > 1e-6 ? pole : new THREE.Vector3(-1, 0, 0));
       p.aim(`foot_${s}`, W(toe).sub(W(ft)));
     }
+    return bat;
   }
 
   /** Wrist placed so the palm wraps the handle at `grip`; fingers curled round it. */

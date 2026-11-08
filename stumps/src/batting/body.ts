@@ -3,7 +3,7 @@
 // front shoulder follows the swing pivot -> torso, head -> arms by IK onto the handle (top hand =
 // left, bottom hand = right, a hand's width apart) -> legs by IK onto the feet.
 import { add, dirOf, dist, ik2, lerp, mul, norm, rotAbout, rotDir, smooth, sub, UP, v, V } from './vec';
-import { BatPose, BallSample, Delivery, makeSwing, sampleAt, Swing, swingPose } from './physics';
+import { BatPose, BallSample, Delivery, makeSwing, sampleAt, Swing, swingPose, timeAtZ } from './physics';
 import { chooseShot } from './shots';
 import STYLE from './style.json';
 
@@ -63,33 +63,37 @@ export function batter(st: BatterState): Skeleton {
   const { t, T, delivery: d, path } = st;
   const s = st.swing;
   // ---- feet
-  const contactT = s ? s.tTap + s.lead : T;
-  const ballC = path ? sampleAt(path, Math.min(contactT, path[path.length - 1].t)).p : v(0, 0.5, 1.9);
   const frontFootBall = !d || !['short', 'bouncer'].includes(d.length);
+  // footwork is decided by reading the length (as a real batter does), not by when you tap, so the
+  // stride starts early and flows; the tap only fine-tunes it (blended in over 0.15 s)
+  const contactT = s ? s.tTap + s.lead : T;
+  const readT = path ? timeAtZ(path, frontFootBall ? 1.95 : 1.05) : T;
+  const ballC = path ? sampleAt(path, Math.min(readT, path[path.length - 1].t)).p : v(0, 0.5, 1.9);
+  const tapK = s && st.tapT !== null ? smooth(st.tapT, st.tapT + 0.15, t) : 0;
   const trig = smooth(0.0, 0.22, t); // trigger: small back-and-across press as the ball is released
   let ftR = add(STANCE_BACK, v(0.12 * trig, 0, -0.04 * trig));
   let ftL = add(STANCE_FRONT, v(0.06 * trig, 0, 0));
   let liftL = 0;
   let liftR = 0;
   const moveStart = 0.18;
-  const moveEnd = Math.max(moveStart + 0.12, contactT - 0.04);
+  const moveEnd = Math.max(moveStart + 0.12, readT - 0.04);
   const u = d ? smooth(moveStart, moveEnd, t) : 0;
   if (d) {
     const shot = s?.shot;
     if (frontFootBall) {
       // stride to the pitch of the ball, head over it: front foot lands just inside the line
-      const side = shot ? shot.contactSide : 0.3;
+      const side = 0.3 + ((shot ? shot.contactSide : 0.3) - 0.3) * tapK;
       const to = v(Math.min(ballC.x - side - 0.05, ftL.x + 0.55), 0, Math.min(ballC.z - 0.12, ftL.z + 0.75));
       ftL = lerp(ftL, to, u);
       liftL = Math.sin(Math.PI * u) * 0.13;
-      if (shot && (shot.name.includes('Flick') || shot.name.includes('glance'))) ftL = add(ftL, v(-0.1 * u, 0, 0));
+      if (shot && (shot.name.includes('Flick') || shot.name.includes('glance'))) ftL = add(ftL, v(-0.1 * u * tapK, 0, 0));
     } else {
       // back and across, then open up for the pull / hook
       const to = v(Math.min(ballC.x - 0.42, ftR.x + 0.45), 0, Math.max(0.55, Math.min(ftR.z, ballC.z - 0.5)));
       ftR = lerp(ftR, to, u);
       liftR = Math.sin(Math.PI * u) * 0.1;
       const horizontal = shot?.plane === 'horizontal' && shot.aim < 0;
-      ftL = lerp(ftL, add(ftR, horizontal ? v(-0.32, 0, 0.3) : v(0.02, 0, 0.42)), u);
+      ftL = lerp(ftL, add(ftR, lerp(v(0.02, 0, 0.42), v(-0.32, 0, 0.3), horizontal ? tapK : 0)), u);
     }
   }
   // ---- pelvis between the feet, weight onto the front foot for front-foot shots
@@ -114,17 +118,25 @@ export function batter(st: BatterState): Skeleton {
   let bat: BatPose;
   let pivot: V;
   const stanceTh = -0.35;
-  const backTh = -2.1;
-  const lift = d ? smooth(-0.25, 0.3, t) : 0;
+  const backTh = -1.85;
+  const lift = d ? smooth(-0.15, 0.35, t) : 0;
   if (s && st.tapT !== null) {
     bat = swingPose(s, t);
     pivot = s.pivot;
     // ease from the pose held at the tap into the shot's own arc
     const k = smooth(st.tapT, st.tapT + 0.06, t);
     if (st.prevPose && k < 1) bat = { h: lerp(st.prevPose.h, bat.h, k), d: norm(lerp(st.prevPose.d, bat.d, k)), n: norm(lerp(st.prevPose.n, bat.n, k)) };
+    // hold the follow-through briefly, then relax back to a ready position (no frozen pose)
+    const relax = smooth(contactT + 0.3, contactT + 1.0, t);
+    if (relax > 0) {
+      const ready = canPose(stanceTh);
+      const canPiv = add(can.pivot, sub(pelvis, add(v(STANCE_BACK.x, 0.93, (STANCE_BACK.z + STANCE_FRONT.z) / 2), v(0.08, 0, 0))));
+      bat = { h: lerp(bat.h, ready.h, relax), d: norm(lerp(bat.d, ready.d, relax)), n: norm(lerp(bat.n, ready.n, relax)) };
+      pivot = lerp(pivot, canPiv, relax);
+    }
   } else if (d && t > T - 0.06) {
     // leave it: lift the bat high out of the way (shoulder arms)
-    const k = smooth(T - 0.06, T + 0.12, t);
+    const k = smooth(T - 0.06, T + 0.12, t) * (1 - smooth(T + 0.6, T + 1.2, t));
     const held = canPose(stanceTh + (backTh - stanceTh) * lift);
     const up = { h: add(pelvis, v(-0.05, 0.85, -0.05)), d: norm(v(0.15, 1, -0.35)), n: v(1, 0, 0) };
     bat = { h: lerp(held.h, up.h, k), d: norm(lerp(held.d, up.d, k)), n: norm(lerp(held.n, up.n, k)) };
@@ -154,7 +166,17 @@ export function batter(st: BatterState): Skeleton {
   pelvis.y = Math.min(0.95, Math.max(0.68, Math.min(pel.y, pF.y, crouch)));
   const look = path ? sampleAt(path, Math.max(0, Math.min(t, T))).p : v(0, 1.2, 20);
   const head = add(nk, add(mul(UP, 0.2), mul(norm(sub(look, nk)), 0.05)));
-  // ---- arms onto the handle: top (left) hand at the top, bottom (right) hand a hand-width below
+  // ---- arms onto the handle: top (left) hand at the top, bottom (right) hand a hand-width below.
+  // If the bat has gone further than the arms can reach (big follow-throughs), the bat comes
+  // back to the hands rather than the hands leaving the bat.
+  const REACH = LIMB.upper + LIMB.fore - 0.025;
+  for (let i = 0; i < 2; i++) {
+    for (const [sh, off] of [[sL, 0.05], [sR, 0.16]] as const) {
+      const g = add(bat.h, mul(bat.d, off));
+      const ex = dist(sh, g) - REACH;
+      if (ex > 0) bat = { ...bat, h: add(bat.h, mul(norm(sub(sh, g)), ex)) };
+    }
+  }
   const gripL = add(bat.h, mul(bat.d, 0.05));
   const gripR = add(bat.h, mul(bat.d, 0.16));
   const elbowPole = add(v(0, -1, 0), mul(dirOf(0), -0.2));

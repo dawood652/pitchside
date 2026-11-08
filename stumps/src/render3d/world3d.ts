@@ -213,9 +213,9 @@ export class World3D {
     cam.lookAt(W(c.look));
     cam.updateProjectionMatrix();
     // batter + bat
-    this.rig.pose(v.batter, v.ballLook);
+    const usedBat = this.rig.pose(v.batter, v.ballLook);
     this.batRT?.apply(true);
-    placeBat(this.bat, v.batter.bat);
+    placeBat(this.bat, usedBat);
     // ball
     this.ball.visible = !!v.ball;
     if (v.ball) this.ball.position.copy(W(v.ball));
@@ -224,10 +224,10 @@ export class World3D {
     if (!v.ball || (last && last.distanceTo(this.ball.position) > 8)) this.trailPts = [];
     else if (!last || last.distanceTo(this.ball.position) > 0.05) this.trailPts.unshift(this.ball.position.clone());
     else if (last.distanceTo(this.ball.position) < 0.01) this.trailPts.pop();
-    this.trailPts.length = Math.min(this.trailPts.length, 40);
+    this.trailPts.length = Math.min(this.trailPts.length, 14); // a short streak, not a line across the ground
     const tp = this.trail.geometry.attributes.position as THREE.BufferAttribute;
     for (let i = 0; i < 40; i++) {
-      const q = this.trailPts[Math.min(i, this.trailPts.length - 1)] ?? this.ball.position;
+      const q = this.trailPts[Math.min(Math.floor(i * 14 / 40), this.trailPts.length - 1)] ?? this.ball.position;
       tp.setXYZ(i, q.x, q.y, q.z);
     }
     tp.needsUpdate = true;
