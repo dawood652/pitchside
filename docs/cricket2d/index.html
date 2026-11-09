@@ -81,7 +81,7 @@
   }
   const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y }), sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
   const mul = (a, k) => ({ x: a.x * k, y: a.y * k }), len = (a) => Math.hypot(a.x, a.y);
-  function ik(a, target, l1, l2, pole) {
+  function ik(a, target, l1, l2, pole, depth = 1) {
     const raw = len(sub(target, a));
     const d = Math.min(l1 + l2 - 1e-4, Math.max(Math.abs(l1 - l2) + 1e-3, raw));
     const dir = mul(sub(target, a), 1 / (raw || 1));
@@ -89,7 +89,7 @@
     const h = Math.sqrt(Math.max(0, l1 * l1 - along * along));
     let p = { x: -dir.y, y: dir.x };
     if (p.x * pole.x + p.y * pole.y < 0) p = mul(p, -1);
-    return { mid: add(add(a, mul(dir, along)), mul(p, h)), end: add(a, mul(dir, d)), reach: raw / (l1 + l2) };
+    return { mid: add(add(a, mul(dir, along)), mul(p, h * depth)), end: add(a, mul(dir, d)), reach: raw / (l1 + l2) };
   }
   function pose(t) {
     const c = chan(t);
@@ -104,8 +104,8 @@
     const th = (c.bat * Math.PI) / 180;
     const bd = { x: -Math.sin(th), y: -Math.cos(th) }; // handle -> toe
     const gT = { x: c.gx, y: c.gy }, gB = add(gT, mul(bd, 0.11)), H = sub(gT, mul(bd, 0.06));
-    const armF = ik(shL, gT, L.upper, L.fore, { x: 1, y: 0.3 });
-    const armB = ik(shR, gB, L.upper, L.fore, { x: -0.5, y: -1 });
+    const armF = ik(shL, gT, L.upper, L.fore, { x: 1, y: 0.3 }, 0.45); // seen from point, most of the elbow bend is toward the camera
+    const armB = ik(shR, gB, L.upper, L.fore, { x: -0.5, y: -1 }, 0.45);
     const hr = ((c.lean + c.head) * Math.PI) / 180;
     const head = add(neck, { x: Math.sin(hr) * 0.15 + 0.02, y: Math.cos(hr) * 0.15 });
     return { t, c, pel, neck, shL, shR, hipL, hipR, legF, legB, armF, armB, H, bd, gT, gB, head, toe: add(H, mul(bd, 0.86)), sweet: add(H, mul(bd, 0.64)) };
@@ -135,104 +135,174 @@ function resize() {
 addEventListener('resize', resize); resize();
 const X = (p) => OX + p.x * S, Y = (p) => OY - p.y * S;
 
-const C = { shirt: '#1f9a55', shirtD: '#167843', trou: '#187a45', trouD: '#105c33', skin: '#e2b48d', skinD: '#c9946b',
-  pad: '#f6f4ec', padD: '#d8d4c7', helm: '#0d5a32', grille: '#9aa3ab', glove: '#fbfbf7', line: '#0b130e', shoe: '#232629', bat: '#e9cf95', batD: '#c9a96a', grip: '#1b1b1b' };
-const OUT = 0.012; // outline thickness (m)
-
-function seg(a, b, w, col) {
-  ctx.lineCap = 'round';
-  ctx.strokeStyle = C.line; ctx.lineWidth = (w + OUT * 2) * S; line(a, b);
-  ctx.strokeStyle = col; ctx.lineWidth = w * S; line(a, b);
-}
-function line(a, b) { ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke(); }
-function dot(p, r, col) {
-  ctx.beginPath(); ctx.arc(X(p), Y(p), (r + OUT) * S, 0, 7); ctx.fillStyle = C.line; ctx.fill();
-  ctx.beginPath(); ctx.arc(X(p), Y(p), r * S, 0, 7); ctx.fillStyle = col; ctx.fill();
-}
+const C = { shirt: '#1f9a55', trou: '#1b8048', skin: '#dcaa82', pad: '#f7f5ee', padD: '#d6d1c3', helm: '#0e5c34', grille: '#a9b0b6',
+  glove: '#fbfbf8', gloveD: '#dcdad2', trim: '#1f9a55', line: '#14201a', shoe: '#f4f4f2', sole: '#2a2d30', bat: '#ecd29a', batD: '#c8a467', grip: '#20232a' };
+const OUT = 0.006; // outline (m)
 const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
-
-function leg(L, hip, front, dark) {
-  const knee = L.mid, ank = L.end;
-  seg(hip, knee, 0.12, dark ? C.trouD : C.trou);
-  // pad: shin guard from just above the knee to the ankle, with a knee roll
-  const top = lerp(knee, hip, 0.18);
-  seg(top, ank, 0.125, dark ? C.padD : C.pad);
-  dot(lerp(knee, hip, 0.05), 0.07, dark ? C.padD : C.pad);
-  // shoe: points down the pitch for the striding front foot, toward the camera-ish for the back foot
-  const dir = front ? { x: 1, y: 0 } : { x: 0.55, y: 0 };
-  const toe = { x: ank.x + dir.x * 0.17, y: Math.max(0.035, ank.y - 0.05) };
-  const heel = { x: ank.x - 0.04, y: ank.y - 0.04 };
-  seg(heel, toe, 0.07, C.shoe);
+const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y }), mul = (a, k) => ({ x: a.x * k, y: a.y * k });
+const sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y }), nrm = (a) => { const l = Math.hypot(a.x, a.y) || 1; return { x: a.x / l, y: a.y / l }; };
+function tone(hex, k) { // k > 0 lighter, k < 0 darker
+  let c0;
+  if (hex[0] === '#') { const n = parseInt(hex.slice(1), 16); c0 = [n >> 16, (n >> 8) & 255, n & 255]; } else c0 = hex.match(/\d+/g).map(Number);
+  const c = c0.map((v) => Math.round(k > 0 ? v + (255 - v) * k : v * (1 + k)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
 }
-function arm(Ar, sh, dark) {
-  seg(sh, Ar.mid, 0.1, dark ? C.shirtD : C.shirt); // short sleeve over the upper arm
-  seg(Ar.mid, Ar.end, 0.075, dark ? C.skinD : C.skin);
-  dot(Ar.end, 0.055, C.glove);
+/** Shading across a part: lit from the upper left, soft core shadow on the far side. */
+function shadeAcross(a, b, w, base) {
+  const d = nrm(sub(b, a)), n = { x: -d.y, y: d.x }, m = lerp(a, b, 0.5);
+  const lit = n.x * -0.6 + n.y * 0.8 > 0 ? 1 : -1;
+  const p1 = add(m, mul(n, w * lit)), p2 = add(m, mul(n, -w * lit));
+  const g = ctx.createLinearGradient(X(p1), Y(p1), X(p2), Y(p2));
+  g.addColorStop(0, tone(base, 0.16)); g.addColorStop(0.4, base); g.addColorStop(1, tone(base, -0.18));
+  return g;
+}
+function taper(a, b, ra, rb, base, outline = true) {
+  const ax = X(a), ay = Y(a), bx = X(b), by = Y(b), f = Math.atan2(by - ay, bx - ax);
+  ctx.beginPath(); ctx.arc(ax, ay, ra * S, f + Math.PI / 2, f + Math.PI * 1.5); ctx.arc(bx, by, rb * S, f - Math.PI / 2, f + Math.PI / 2); ctx.closePath();
+  ctx.fillStyle = shadeAcross(a, b, Math.max(ra, rb), base); ctx.fill();
+  if (outline) { ctx.lineWidth = OUT * S; ctx.strokeStyle = C.line; ctx.lineJoin = 'round'; ctx.stroke(); }
+}
+function poly(pts, fill, outline = true) {
+  ctx.beginPath(); pts.forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.closePath();
+  ctx.fillStyle = fill; ctx.fill(); if (outline) { ctx.lineJoin = 'round'; ctx.lineWidth = OUT * S; ctx.strokeStyle = C.line; ctx.stroke(); }
+}
+function stroke(a, b, w, col) { ctx.lineCap = 'round'; ctx.lineWidth = w * S; ctx.strokeStyle = col; ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke(); }
+function ell(p, rx, ry, rot, fill, outline = true) {
+  ctx.beginPath(); ctx.ellipse(X(p), Y(p), rx * S, ry * S, -rot, 0, 7); ctx.fillStyle = fill; ctx.fill();
+  if (outline) { ctx.lineWidth = OUT * S; ctx.strokeStyle = C.line; ctx.stroke(); }
+}
+
+function leg(L, hip, front) {
+  const knee = L.mid, ank = L.end, dk = front ? 0 : -0.1;
+  taper(hip, knee, 0.078, 0.058, tone(C.trou, dk));
+  // pad: cane shin guard from above the knee to the ankle, ridges, two straps, knee roll
+  const top = lerp(knee, hip, 0.22), bot = add(ank, { x: 0, y: -0.01 });
+  taper(top, bot, 0.072, 0.062, tone(C.pad, dk));
+  const d = nrm(sub(bot, top)), n = { x: -d.y, y: d.x };
+  for (const o of [-0.03, 0, 0.03]) stroke(add(lerp(top, bot, 0.08), mul(n, o)), add(lerp(top, bot, 0.93), mul(n, o * 0.85)), 0.006, tone(C.padD, dk));
+  for (const k of [0.32, 0.72]) { const c = lerp(top, bot, k); stroke(add(c, mul(n, -0.07)), add(c, mul(n, 0.07)), 0.014, '#1f2a24'); }
+  ell(lerp(top, knee, 0.45), 0.078, 0.062, Math.atan2(d.y, d.x), tone(C.pad, dk - 0.02));
+  // spiked cricket shoe
+  const fwd = front ? 1 : 0.6, toe = { x: ank.x + 0.17 * fwd, y: Math.max(0.03, ank.y - 0.06) }, heel = { x: ank.x - 0.05, y: Math.max(0.03, ank.y - 0.05) };
+  taper(heel, toe, 0.042, 0.032, tone(C.shoe, dk - 0.04));
+  stroke(add(heel, { x: 0, y: -0.035 }), add(toe, { x: 0.005, y: -0.027 }), 0.016, C.sole);
+}
+/** wrist: where the forearm ends and the glove cuff begins */
+function wristOf(Ar) { return lerp(Ar.mid, Ar.end, 0.74); }
+function armUpper(Ar, sh, back) {
+  const dk = back ? -0.12 : 0, el = Ar.mid, wr = wristOf(Ar);
+  taper(el, wr, 0.043, 0.034, tone(C.skin, dk)); // forearm
+  taper(sh, el, 0.058, 0.046, tone(C.skin, dk)); // upper arm
+  taper(sh, lerp(sh, el, 0.55), 0.072, 0.056, tone(C.shirt, dk)); // short sleeve
+}
+/** Batting glove clenched round the handle: padded back, four finger rolls crossing the handle,
+ *  thumb along the top, cuff with a coloured band running back to the wrist. */
+function glove(grip, bd, wrist) {
+  const u = bd, v = { x: -bd.y, y: bd.x };
+  const ws = Math.sign((wrist.x - grip.x) * v.x + (wrist.y - grip.y) * v.y) || 1; // wrist side
+  const at = (a, b) => add(grip, add(mul(u, a), mul(v, b * ws)));
+  // cuff from the wrist into the glove
+  taper(wrist, at(0, 0.04), 0.044, 0.05, C.glove);
+  stroke(lerp(wrist, at(0, 0.04), 0.35), lerp(wrist, at(0, 0.04), 0.35), 0, C.trim);
+  { const c = lerp(wrist, at(0, 0.04), 0.3), d = nrm(sub(at(0, 0.04), wrist)), n = { x: -d.y, y: d.x }; stroke(add(c, mul(n, -0.045)), add(c, mul(n, 0.045)), 0.018, C.trim); }
+  // padded back of the hand
+  poly([at(-0.055, 0.055), at(0.055, 0.055), at(0.06, -0.01), at(-0.06, -0.01)], C.glove);
+  // finger rolls wrap over the handle (the far side of the grip from the wrist)
+  for (let i = 0; i < 4; i++) {
+    const k = -0.039 + i * 0.026;
+    taper(at(k, 0.012), at(k, -0.05), 0.0135, 0.0128, i % 2 ? C.gloveD : C.glove);
+  }
+  // thumb laid along the handle
+  taper(at(-0.05, 0.03), at(-0.012, -0.02), 0.015, 0.013, C.glove);
 }
 function bat(p) {
   const h = p.H, d = p.bd, n = { x: -d.y, y: d.x };
-  const at = (k, w) => ({ x: h.x + d.x * k + n.x * w, y: h.y + d.y * k + n.y * w });
-  seg(h, at(0.3, 0), 0.034, C.grip);
-  // blade with a little shoulder taper and a toe
-  const pts = [at(0.29, 0.026), at(0.34, 0.048), at(0.84, 0.05), at(0.865, 0.035), at(0.865, -0.035), at(0.84, -0.045), at(0.34, -0.044), at(0.29, -0.026)];
-  ctx.beginPath(); pts.forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.closePath();
-  ctx.lineJoin = 'round'; ctx.lineWidth = OUT * 2 * S; ctx.strokeStyle = C.line; ctx.stroke();
-  ctx.fillStyle = C.bat; ctx.fill();
-  ctx.beginPath(); [at(0.36, -0.03), at(0.82, -0.032), at(0.82, -0.006), at(0.36, -0.006)].forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.fillStyle = C.batD; ctx.fill();
+  const at = (k, w) => add(h, add(mul(d, k), mul(n, w)));
+  // handle with rubber grip rings
+  taper(at(0, 0), at(0.3, 0), 0.019, 0.017, C.grip);
+  for (let k = 0.03; k < 0.28; k += 0.035) stroke(at(k, -0.018), at(k, 0.018), 0.004, '#3a3f48');
+  // blade: shoulders, edges, toe; grain shading and a sticker band
+  const pts = [at(0.29, 0.02), at(0.34, 0.05), at(0.84, 0.054), at(0.866, 0.04), at(0.866, -0.04), at(0.84, -0.05), at(0.34, -0.046), at(0.29, -0.02)];
+  const g = ctx.createLinearGradient(X(at(0.6, 0.05)), Y(at(0.6, 0.05)), X(at(0.6, -0.05)), Y(at(0.6, -0.05)));
+  g.addColorStop(0, tone(C.bat, 0.25)); g.addColorStop(0.5, C.bat); g.addColorStop(1, C.batD);
+  poly(pts, g);
+  for (const w of [-0.02, 0.008, 0.03]) stroke(at(0.38, w), at(0.82, w + 0.004), 0.0025, 'rgba(150,110,50,0.35)');
+  poly([at(0.4, 0.05), at(0.55, 0.052), at(0.55, -0.047), at(0.4, -0.046)], '#0b3d91', false);
+  poly([at(0.43, 0.05), at(0.47, 0.051), at(0.47, -0.047), at(0.43, -0.046)], '#e8b83a', false);
+  poly([at(0.29, 0.02), at(0.36, 0.0), at(0.29, -0.02)], tone(C.batD, -0.1), false); // splice
+}
+function torso(p) {
+  const out = nrm(sub(p.shL, p.shR)), mid = lerp(p.hipL, p.hipR, 0.5);
+  const hipA = add(p.hipL, { x: 0.03, y: 0.02 }), hipB = add(p.hipR, { x: -0.03, y: 0.02 });
+  const shA = add(p.shL, mul(out, 0.055)), shB = add(p.shR, mul(out, -0.055));
+  const waistA = lerp(shA, hipA, 0.6), waistB = lerp(shB, hipB, 0.6);
+  ctx.beginPath(); ctx.moveTo(X(shA), Y(shA));
+  ctx.quadraticCurveTo(X(add(waistA, mul(out, 0.03))), Y(add(waistA, mul(out, 0.03))), X(hipA), Y(hipA));
+  ctx.lineTo(X(hipB), Y(hipB));
+  ctx.quadraticCurveTo(X(add(waistB, mul(out, -0.03))), Y(add(waistB, mul(out, -0.03))), X(shB), Y(shB));
+  ctx.quadraticCurveTo(X(p.neck), Y(add(p.neck, { x: 0, y: 0.05 })), X(shA), Y(shA));
+  const g = ctx.createLinearGradient(X(shB), Y(shB), X(hipA), Y(hipA));
+  g.addColorStop(0, tone(C.shirt, 0.18)); g.addColorStop(0.6, C.shirt); g.addColorStop(1, tone(C.shirt, -0.25));
+  ctx.fillStyle = g; ctx.fill(); ctx.lineWidth = OUT * S; ctx.strokeStyle = C.line; ctx.stroke();
+  // collar and placket
+  poly([add(p.neck, mul(out, -0.05)), add(p.neck, { x: 0, y: -0.07 }), add(p.neck, mul(out, 0.05))], tone(C.shirt, -0.4));
+  stroke(add(p.neck, { x: 0, y: -0.07 }), lerp(p.neck, mid, 0.35), 0.004, tone(C.shirt, -0.3));
+  // trousers round the hips
+  taper(add(p.hipR, { x: 0.015, y: 0.0 }), add(p.hipL, { x: -0.015, y: 0.0 }), 0.07, 0.07, C.trou);
+}
+function head(p) {
+  taper(p.neck, lerp(p.neck, p.head, 0.55), 0.045, 0.042, C.skin);
+  const hd = p.head, r = 0.112;
+  // face under the peak (looking down the pitch), ear guard, dome, peak, grille
+  ell(add(hd, { x: 0.035, y: -0.03 }), 0.085, 0.095, 0, C.skin);
+  ell(add(hd, { x: 0.105, y: -0.035 }), 0.016, 0.022, 0, tone(C.skin, -0.08)); // nose
+  ctx.save(); ctx.translate(X(hd), Y(hd));
+  const g = ctx.createRadialGradient(-r * 0.4 * S, -r * 0.5 * S, r * 0.1 * S, 0, 0, r * 1.2 * S);
+  g.addColorStop(0, tone(C.helm, 0.35)); g.addColorStop(0.6, C.helm); g.addColorStop(1, tone(C.helm, -0.35));
+  ctx.beginPath(); ctx.arc(0, 0, r * S, Math.PI * 0.92, Math.PI * 2.06); ctx.lineTo(-r * 0.15 * S, r * 0.62 * S); ctx.lineTo(-r * 0.92 * S, r * 0.55 * S); ctx.closePath();
+  ctx.fillStyle = g; ctx.fill(); ctx.lineWidth = OUT * S; ctx.strokeStyle = C.line; ctx.stroke();
+  ctx.restore();
+  ell(add(hd, { x: 0.1, y: 0.008 }), 0.058, 0.014, -0.08, tone(C.helm, -0.1)); // peak
+  ctx.strokeStyle = C.grille; ctx.lineCap = 'round'; ctx.lineWidth = 0.009 * S;
+  for (const y of [-0.035, -0.07, -0.105]) { ctx.beginPath(); ctx.moveTo(X(add(hd, { x: 0.03, y })), Y(add(hd, { x: 0.03, y }))); ctx.quadraticCurveTo(X(add(hd, { x: 0.15, y: y + 0.004 })), Y(add(hd, { x: 0.15, y: y + 0.004 })), X(add(hd, { x: 0.13, y: y - 0.02 })), Y(add(hd, { x: 0.13, y: y - 0.02 }))); ctx.stroke(); }
+  stroke(add(hd, { x: 0.125, y: -0.01 }), add(hd, { x: 0.11, y: -0.12 }), 0.009, C.grille);
 }
 function body(p, alpha) {
   ctx.globalAlpha = alpha;
-  // shadow
   ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath();
   ctx.ellipse(X({ x: (p.legF.end.x + p.legB.end.x) / 2, y: 0 }), Y({ x: 0, y: 0 }), (Math.abs(p.legF.end.x - p.legB.end.x) / 2 + 0.25) * S, 0.05 * S, 0, 0, 7); ctx.fill();
-  leg(p.legB, p.hipR, false, true);
-  arm(p.armB, p.shR, true); // back arm behind the body
-  // torso: shoulders to hips, rounded
-  ctx.beginPath(); [p.shL, p.shR, { x: p.hipR.x - 0.02, y: p.hipR.y }, { x: p.hipL.x + 0.02, y: p.hipL.y }].forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.closePath();
-  ctx.lineJoin = 'round'; ctx.lineWidth = (0.16 + OUT * 2) * S; ctx.strokeStyle = C.line; ctx.stroke();
-  ctx.lineWidth = 0.16 * S; ctx.strokeStyle = C.shirt; ctx.stroke(); ctx.fillStyle = C.shirt; ctx.fill();
-  seg(lerp(p.hipL, p.hipR, 0.5), lerp(p.hipL, p.hipR, 0.5), 0.2, C.trou); // seat
-  leg(p.legF, p.hipL, true, false);
-  // head: helmet with peak and grille facing the bowler
-  seg(p.neck, lerp(p.neck, p.head, 0.5), 0.07, C.skin);
-  const hd = p.head; dot(hd, 0.105, C.skin);
-  ctx.save(); ctx.translate(X(hd), Y(hd));
-  const r = 0.112 * S;
-  ctx.beginPath(); ctx.arc(0, 0, r + OUT * S, Math.PI * 0.95, Math.PI * 2.08); ctx.closePath(); ctx.fillStyle = C.line; ctx.fill();
-  ctx.beginPath(); ctx.arc(0, 0, r, Math.PI * 0.95, Math.PI * 2.08); ctx.closePath(); ctx.fillStyle = C.helm; ctx.fill();
-  ctx.fillStyle = C.helm; ctx.strokeStyle = C.line; ctx.lineWidth = OUT * S;
-  ctx.beginPath(); ctx.ellipse(r * 0.95, -r * 0.08, r * 0.42, r * 0.11, 0.1, 0, 7); ctx.fill(); ctx.stroke(); // peak
-  ctx.strokeStyle = C.grille; ctx.lineWidth = 0.011 * S; ctx.lineCap = 'round';
-  for (const y of [0.15, 0.42, 0.7]) { ctx.beginPath(); ctx.moveTo(r * 0.55, r * y); ctx.quadraticCurveTo(r * 1.15, r * (y + 0.05), r * 0.98, r * (y + 0.12)); ctx.stroke(); }
-  ctx.beginPath(); ctx.moveTo(r * 0.98, r * 0.02); ctx.lineTo(r * 0.92, r * 0.9); ctx.stroke();
-  ctx.restore();
-  bat(p);
-  arm(p.armF, p.shL, false); // top hand over the bat
-  dot(p.gB, 0.055, C.glove); // bottom glove drawn over the handle too
+  const batBehind = p.bd.y > 0.25; // backlift / finish: the blade is behind the head
+  if (batBehind) bat(p);
+  leg(p.legB, p.hipR, false);
+  torso(p);
+  leg(p.legF, p.hipL, true);
+  armUpper(p.armB, p.shR, true);
+  head(p);
+  if (!batBehind) bat(p);
+  glove(p.gB, p.bd, wristOf(p.armB));
+  armUpper(p.armF, p.shL, false);
+  glove(p.gT, p.bd, wristOf(p.armF));
   ctx.globalAlpha = 1;
 }
 function scene(t) {
-  // sky, stand, grass, pitch
   const g = ctx.createLinearGradient(0, 0, 0, OY);
   g.addColorStop(0, '#7fb6e6'); g.addColorStop(0.55, '#cfe5f2'); g.addColorStop(0.56, '#2e3a4a'); g.addColorStop(0.7, '#3b4a5c'); g.addColorStop(0.71, '#3f9d4f'); g.addColorStop(1, '#4fb25d');
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
-  // crowd speckle
   ctx.save(); for (let i = 0; i < 420; i++) { const x = ((i * 97.13) % 1) * W, y = OY * (0.565 + ((i * 0.6180339) % 1) * 0.13); ctx.fillStyle = ['#e9e4d8', '#c9473f', '#2e4a7a', '#d9a63b', '#1fb6e8', '#f2c94c'][i % 6]; ctx.globalAlpha = 0.55; ctx.fillRect(x, y, 0.025 * S, 0.035 * S); } ctx.restore();
   ctx.fillStyle = '#4fb25d'; ctx.fillRect(0, OY, W, H - OY);
   ctx.fillStyle = '#d9c393'; ctx.fillRect(0, OY - 0.012 * S, W, 0.07 * S);
-  ctx.fillStyle = '#ffffff'; ctx.fillRect(X({ x: 0.0, y: 0 }) - 0.02 * S, OY - 0.012 * S, 0.04 * S, 0.07 * S); // popping crease
-  // stumps and bails behind the batter
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(X({ x: 0.0, y: 0 }) - 0.02 * S, OY - 0.012 * S, 0.04 * S, 0.07 * S);
   const sx = -0.62;
-  for (const k of [-0.03, 0, 0.03]) seg({ x: sx + k, y: 0 }, { x: sx + k, y: 0.71 }, 0.034, '#f4efe2');
-  seg({ x: sx - 0.05, y: 0.725 }, { x: sx + 0.05, y: 0.725 }, 0.018, '#e6d2a6');
+  for (const k of [-0.03, 0, 0.03]) taper({ x: sx + k, y: 0 }, { x: sx + k, y: 0.71 }, 0.017, 0.017, '#f4efe2');
+  taper({ x: sx - 0.05, y: 0.725 }, { x: sx + 0.05, y: 0.725 }, 0.009, 0.009, '#e6d2a6');
 }
 function ballDraw(t) {
-  const b = A.ball(t); if (!b) return;
-  if (t < 0.6) {
-    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(X(b), Y({ x: 0, y: 0 }), 0.04 * S, 0.012 * S, 0, 0, 7); ctx.fill();
-    dot(b, 0.04, '#c4232b');
-    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 0.006 * S; ctx.beginPath(); ctx.arc(X(b), Y(b), 0.026 * S, 0.3, 2.6); ctx.stroke();
-  }
+  const b = A.ball(t); if (!b || t > 0.6) return;
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(X(b), Y({ x: 0, y: 0 }), 0.04 * S, 0.012 * S, 0, 0, 7); ctx.fill();
+  const g = ctx.createRadialGradient(X(b) - 0.012 * S, Y(b) - 0.012 * S, 0.004 * S, X(b), Y(b), 0.04 * S);
+  g.addColorStop(0, '#e24a4f'); g.addColorStop(1, '#8e1219');
+  ctx.beginPath(); ctx.arc(X(b), Y(b), 0.038 * S, 0, 7); ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'; ctx.lineWidth = 0.005 * S; ctx.beginPath(); ctx.arc(X(b), Y(b), 0.024 * S, 0.3, 2.6); ctx.stroke();
 }
 
 let t = A.T0, speed = 1, playing = true, ghost = false, last = performance.now();
@@ -244,8 +314,7 @@ function frame(now) {
   if (ghost) for (const k of A.KEYS) body(A.pose(k[0]), 0.16);
   body(A.pose(t), 1);
   ballDraw(t);
-  if (Math.abs(t) < 0.02) { const p = A.pose(0).sweet; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 0.01 * S; ctx.beginPath(); ctx.arc(X(p), Y(p), 0.1 * S, 0, 7); ctx.stroke(); }
-  requestAnimationFrame(frame);
+    requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 window.__setT = (x) => { t = x; playing = false; };
