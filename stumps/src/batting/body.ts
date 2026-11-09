@@ -145,6 +145,7 @@ export function batter(st: BatterState): Skeleton {
   const mid = lerp(ftR, ftL, wF);
   const stride = dist(ftL, ftR);
   const pelvis = add(mid, v(0.08, 0.93 - Math.max(0, stride - 0.45) * 0.22 - 0.04 * trig, 0)); // first guess, refined below
+  const anchor = { ...pelvis }; // between the feet: moves only as smoothly as the feet do
 
   // ---- bat
   const can = canonical(add(v(STANCE_BACK.x, 0.93, (STANCE_BACK.z + STANCE_FRONT.z) / 2), v(0.08, 0, 0)));
@@ -252,28 +253,35 @@ export function batter(st: BatterState): Skeleton {
   // directions. The engine keeps the feet (stride) and the hands (on the bat). Around contact the
   // shoulders hand back to the engine so the bat meets the ball exactly where the physics says.
   if (d) {
+    // before the tap the body follows a drive timed to the ball's arrival; after it, the chosen shot
+    // timed to the bat's arrival. The two are blended over the first 0.15 s of the swing (no jump).
     const fam = s ? family(s.shot.aim, s.shot.plane) : 'drive';
-    const ct = s ? contactT : readT;
     const relaxC = s ? smooth(contactT + 0.6, contactT + 1.3, t) : 0;
-    const tr = t - ct;
+    const tr = t - (s ? contactT : readT);
     const C0 = captured(fam, CAPTURE.t0);
-    const Cn = captured(fam, tr);
+    const Cpre = captured('drive', t - readT);
+    const Cpost = captured(fam, t - contactT);
     const C: Record<string, V> = {};
-    for (const n of CJ) C[n] = lerp(Cn[n], C0[n], relaxC);
+    for (const n of CJ) C[n] = lerp(lerp(Cpre[n], Cpost[n], tapK), C0[n], relaxC);
     const cPel = lerp(C.hipL, C.hipR, 0.5);
-    const off = v(pelvis.x - cPel.x, 0, pelvis.z - cPel.z);
+    const off = v(anchor.x - cPel.x, 0, anchor.z - cPel.z);
     const at = (n: string) => add(C[n], off);
-    const wEng = 1 - smooth(0.07, 0.24, Math.abs(tr)); // 1 at contact: engine shoulders
+    const wEng = 1 - smooth(0.05, 0.4, Math.abs(tr)); // 1 at contact: shoulders on the swing (eased in/out)
     const cy = Math.min(0.87, Math.max(0.62, cPel.y));
+    pelvis.x = cPel.x + off.x; // the captured hips (anchored between the feet), not the swing maths' hip point
+    pelvis.z = cPel.z + off.z;
     pelvis.y = cy;
     const cHipL = at('hipL');
     const cHipR = at('hipR');
     const capSL = at('shL');
     const capSR = at('shR');
-    const shL = lerp(capSL, sL, wEng);
-    const shR = lerp(capSR, sR, wEng);
+    // the shoulder LINE always comes from the capture (it never flips); near contact the whole line
+    // is only shifted so the front shoulder sits on the swing's pivot
+    const shift = mul(sub(sL, capSL), wEng);
+    const shL = add(capSL, shift);
+    const shR = add(capSR, shift);
     const neck = lerp(shL, shR, 0.5);
-    keepSpine(pelvis, neck);
+    keepSpine(pelvis, lerp(capSL, capSR, 0.5)); // hips follow the captured torso, not the contact shift (no hip snap)
     const headC = add(at('head'), mul(UP, 0.02));
     const head2 = lerp(headC, head, wEng);
     const hipDir2 = norm(sub(cHipL, cHipR));
@@ -281,8 +289,24 @@ export function batter(st: BatterState): Skeleton {
     const hR = sub(pelvis, mul(hipDir2, LIMB.hip));
     const lL = ik2(hL, aL, LIMB.thigh, LIMB.shin, sub(at('knL'), lerp(hL, aL, 0.5)));
     const lR = ik2(hR, aR, LIMB.thigh, LIMB.shin, sub(at('knR'), lerp(hR, aR, 0.5)));
-    const eL = ik2(shL, gripL, LIMB.upper, LIMB.fore, sub(at('elL'), lerp(shL, gripL, 0.5)));
-    const eR = ik2(shR, gripR, LIMB.upper, LIMB.fore, sub(at('elR'), lerp(shR, gripR, 0.5)));
+    // near-straight arms make the captured elbow pole tiny and noisy, so it flips; a small steady
+    // bias (elbows down and in) takes over then, and the capture still wins when the arm is bent
+    const biasL = mul(norm(add(elbowPole, v(0.3, 0, 0.2))), 0.07);
+    const biasR = mul(norm(add(elbowPole, v(-0.2, 0, -0.3))), 0.07);
+    // the hands keep a natural distance from the captured shoulders: never further than the arms
+    // reach, never so close that the bottom elbow folds shut (top of the backlift)
+    let bat2 = bat;
+    for (let i = 0; i < 3; i++)
+      for (const [sh, o, lo] of [[shL, 0.05, 0.3], [shR, 0.16, 0.36]] as const) {
+        const g = add(bat2.h, mul(bat2.d, o));
+        const d = dist(sh, g);
+        const push = d > REACH ? REACH - d : d < lo ? lo - d : 0;
+        if (push !== 0) bat2 = { ...bat2, h: add(bat2.h, mul(norm(sub(g, sh)), push)) };
+      }
+    const gL2 = add(bat2.h, mul(bat2.d, 0.05));
+    const gR2 = add(bat2.h, mul(bat2.d, 0.16));
+    const eL = ik2(shL, gL2, LIMB.upper, LIMB.fore, add(sub(at('elL'), lerp(shL, gL2, 0.5)), biasL));
+    const eR = ik2(shR, gR2, LIMB.upper, LIMB.fore, add(sub(at('elR'), lerp(shR, gR2, 0.5)), biasR));
     return {
       head: head2,
       neck,
@@ -290,8 +314,8 @@ export function batter(st: BatterState): Skeleton {
       shR,
       elL: eL.mid,
       elR: eR.mid,
-      haL: gripL,
-      haR: gripR,
+      haL: gL2,
+      haR: gR2,
       pelvis,
       hipL: hL,
       hipR: hR,
@@ -301,7 +325,7 @@ export function batter(st: BatterState): Skeleton {
       ftR: lR.end,
       toeL: add(lL.end, add(toeOut, v(0, -ANKLE + 0.02, 0))),
       toeR: add(lR.end, add(rotDir(toeOut, UP, -0.3), v(0, -ANKLE + 0.02, 0))),
-      bat,
+      bat: bat2,
       look,
     };
   }
