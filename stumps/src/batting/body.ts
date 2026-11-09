@@ -6,6 +6,36 @@ import { add, dirOf, dist, ik2, lerp, mul, norm, rotAbout, rotDir, smooth, sub, 
 import { BatPose, BallSample, Delivery, makeSwing, sampleAt, Swing, swingPose, timeAtZ } from './physics';
 import { chooseShot } from './shots';
 import STYLE from './style.json';
+import CAPTURE from './capture.json';
+
+type Fam = 'drive' | 'off' | 'leg';
+const CJ = CAPTURE.joints;
+/** A frame of the captured swing (time relative to contact), as joint name -> position. */
+let CS = 0; // capture -> our body scale (MediaPipe's skeleton is smaller than the game's)
+function captured(fam: Fam, tr: number): Record<string, V> {
+  const clip = CAPTURE[fam] as number[][][];
+  if (!CS) {
+    const a = (CAPTURE.drive as number[][][])[0];
+    const j = (n: string) => a[CJ.indexOf(n)];
+    const d3 = (p: number[], q: number[]) => Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]);
+    CS = (LIMB.thigh + LIMB.shin) / (d3(j('hipL'), j('knL')) + d3(j('knL'), j('ftL')));
+  }
+  const f = Math.max(0, Math.min(clip.length - 1.001, (tr - CAPTURE.t0) / CAPTURE.dt));
+  const k = Math.floor(f);
+  const u = f - k;
+  const out: Record<string, V> = {};
+  CJ.forEach((n, i) => {
+    const a = clip[k][i];
+    const b = clip[k + 1][i];
+    out[n] = v((a[0] + (b[0] - a[0]) * u) * CS, (a[1] + (b[1] - a[1]) * u) * CS, (a[2] + (b[2] - a[2]) * u) * CS);
+  });
+  return out;
+}
+function family(aim: number, plane: string): Fam {
+  if (aim < -0.35) return 'leg';
+  if (plane === 'horizontal' || aim > 0.9) return 'off';
+  return 'drive';
+}
 
 /** Sample a curve from the captured batting style at time tr relative to contact. */
 function style(key: 'pelvisH' | 'leanX' | 'headX', tr: number): number {
@@ -203,6 +233,62 @@ export function batter(st: BatterState): Skeleton {
     }
   }
   const toeOut = v(0.24, 0, 0.04);
+  // ---- Dodo's captured swing drives the body: hips height, hip line, shoulders, head, knee and elbow
+  // directions. The engine keeps the feet (stride) and the hands (on the bat). Around contact the
+  // shoulders hand back to the engine so the bat meets the ball exactly where the physics says.
+  if (d) {
+    const fam = s ? family(s.shot.aim, s.shot.plane) : 'drive';
+    const ct = s ? contactT : readT;
+    const relaxC = s ? smooth(contactT + 0.6, contactT + 1.3, t) : 0;
+    const tr = t - ct;
+    const C0 = captured(fam, CAPTURE.t0);
+    const Cn = captured(fam, tr);
+    const C: Record<string, V> = {};
+    for (const n of CJ) C[n] = lerp(Cn[n], C0[n], relaxC);
+    const cPel = lerp(C.hipL, C.hipR, 0.5);
+    const off = v(pelvis.x - cPel.x, 0, pelvis.z - cPel.z);
+    const at = (n: string) => add(C[n], off);
+    const wEng = 1 - smooth(0.07, 0.24, Math.abs(tr)); // 1 at contact: engine shoulders
+    const cy = Math.min(0.98, Math.max(0.68, cPel.y));
+    pelvis.y = cy;
+    const cHipL = at('hipL');
+    const cHipR = at('hipR');
+    const capSL = at('shL');
+    const capSR = at('shR');
+    const shL = lerp(capSL, sL, wEng);
+    const shR = lerp(capSR, sR, wEng);
+    const neck = lerp(shL, shR, 0.5);
+    const headC = add(at('head'), mul(UP, 0.02));
+    const head2 = lerp(headC, head, wEng);
+    const hipDir2 = norm(sub(cHipL, cHipR));
+    const hL = add(pelvis, mul(hipDir2, LIMB.hip));
+    const hR = sub(pelvis, mul(hipDir2, LIMB.hip));
+    const lL = ik2(hL, aL, LIMB.thigh, LIMB.shin, sub(at('knL'), lerp(hL, aL, 0.5)));
+    const lR = ik2(hR, aR, LIMB.thigh, LIMB.shin, sub(at('knR'), lerp(hR, aR, 0.5)));
+    const eL = ik2(shL, gripL, LIMB.upper, LIMB.fore, sub(at('elL'), lerp(shL, gripL, 0.5)));
+    const eR = ik2(shR, gripR, LIMB.upper, LIMB.fore, sub(at('elR'), lerp(shR, gripR, 0.5)));
+    return {
+      head: head2,
+      neck,
+      shL,
+      shR,
+      elL: eL.mid,
+      elR: eR.mid,
+      haL: gripL,
+      haR: gripR,
+      pelvis,
+      hipL: hL,
+      hipR: hR,
+      knL: lL.mid,
+      knR: lR.mid,
+      ftL: lL.end,
+      ftR: lR.end,
+      toeL: add(lL.end, add(toeOut, v(0, -0.07, 0))),
+      toeR: add(lR.end, add(rotDir(toeOut, UP, -0.3), v(0, -0.07, 0))),
+      bat,
+      look,
+    };
+  }
   return {
     head,
     neck: nk,
