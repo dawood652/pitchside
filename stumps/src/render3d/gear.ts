@@ -98,6 +98,46 @@ function glove(color: number): THREE.Group {
   return g;
 }
 
+/** Batting glove clenched round the bat handle, built in the bat's own frame (handle along y,
+ *  grip point at the origin). side 1 = top hand (wrist on the face side, -z), -1 = bottom hand
+ *  (wrist behind the handle). The fingers are rolls wrapped round the handle, so the glove always
+ *  holds the bat, whatever the arm is doing. */
+export function gripGlove(color: number, side: number): THREE.Group {
+  const g = new THREE.Group();
+  const white = new THREE.MeshStandardMaterial({ color: 0xf4f4f0, roughness: 0.62 });
+  const seam = new THREE.MeshStandardMaterial({ color: 0xdedcd2, roughness: 0.7 });
+  const trim = new THREE.MeshStandardMaterial({ color, roughness: 0.45 });
+  // four finger rolls round the handle; the opening faces the wrist (-z), where the palm closes it
+  const arc = Math.PI * 1.3;
+  const gap = (Math.PI * 2 - arc) / 2;
+  [-0.036, -0.012, 0.012, 0.036].forEach((y, i) => {
+    const geo = new THREE.TorusGeometry(0.031, 0.0135, 8, 20, arc);
+    geo.rotateZ(Math.PI / 2 + gap);
+    geo.rotateX(-Math.PI / 2);
+    const roll = new THREE.Mesh(geo, i % 2 ? seam : white);
+    roll.position.y = y;
+    g.add(roll);
+  });
+  // palm and padded back of the hand, between the fingers and the wrist
+  const back = new THREE.Mesh(new RoundedBoxGeometry(0.05, 0.1, 0.07, 3, 0.018), white);
+  back.position.set(0, 0.004, -0.05);
+  // thumb laid over the fingers
+  const thumb = new THREE.Mesh(new THREE.CapsuleGeometry(0.0145, 0.035, 3, 8), white);
+  thumb.rotation.set(0.35, 0, 1.25);
+  thumb.position.set(0.012, 0.05, -0.012);
+  // cuff toward the forearm, with a coloured band
+  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.043, 0.047, 0.06, 18), white);
+  cuff.rotation.x = Math.PI / 2;
+  cuff.position.set(0, 0.012, -0.105);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(0.0475, 0.0475, 0.022, 18), trim);
+  band.rotation.x = Math.PI / 2;
+  band.position.set(0, 0.012, -0.112);
+  g.add(back, thumb, cuff, band);
+  g.traverse((o) => ((o as THREE.Mesh).castShadow = true));
+  if (side < 0) g.rotation.y = Math.PI;
+  return g;
+}
+
 export class Gear {
   private items: Attached[] = [];
   constructor(private scene: THREE.Scene) {}

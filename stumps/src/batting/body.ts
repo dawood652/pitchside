@@ -270,6 +270,7 @@ export function batter(st: BatterState): Skeleton {
     const cy = Math.min(0.87, Math.max(0.62, cPel.y));
     pelvis.x = cPel.x + off.x; // the captured hips (anchored between the feet), not the swing maths' hip point
     pelvis.z = cPel.z + off.z;
+    const dropY = cy - pelvis.y; // the captured crouch is lower than the swing maths' hips
     pelvis.y = cy;
     const cHipL = at('hipL');
     const cHipR = at('hipR');
@@ -295,7 +296,9 @@ export function batter(st: BatterState): Skeleton {
     const biasR = mul(norm(add(elbowPole, v(-0.2, 0, -0.3))), 0.07);
     // the hands keep a natural distance from the captured shoulders: never further than the arms
     // reach, never so close that the bottom elbow folds shut (top of the backlift)
-    let bat2 = bat;
+    // the hands sink with the crouch (stance, backlift, follow-through), so they rest at the hips
+    // with the bat toe on the ground; near contact the swing maths keep the bat on the ball
+    let bat2 = { ...bat, h: add(bat.h, v(0, dropY * (1 - wEng), 0)) };
     for (let i = 0; i < 3; i++)
       for (const [sh, o, lo] of [[shL, 0.05, 0.3], [shR, 0.16, 0.36]] as const) {
         const g = add(bat2.h, mul(bat2.d, o));

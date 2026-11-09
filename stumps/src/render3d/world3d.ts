@@ -15,7 +15,7 @@ import { armour, makeBat, Person } from './people';
 import { kitMaterial, KitLook, loadPlayerAsset, PlayerAsset } from './playerModel';
 import { BatterRig, placeBat } from './poser';
 import { AVATARS, bipedBones, loadRocketbox, RbAsset, RbPerson, Retarget } from './rocketbox';
-import { Gear } from './gear';
+import { Gear, gripGlove } from './gear';
 import { BOWL_FROM, BOWL_TO, bowlerJoints, bowlerZ, wristFlick } from './bowling';
 
 const W = (p: V) => new THREE.Vector3(-p.x, p.y, p.z);
@@ -154,7 +154,13 @@ export class World3D {
     // drop the mannequin's simple gear
     for (const p of [this.batter, this.keeper]) p.m.model.traverse((o) => (o as THREE.Mesh).isMesh && !(o as THREE.SkinnedMesh).isSkinnedMesh && (o.visible = false));
     this.rBatter = new RbPerson(rb, 'rb11', s);
-    this.gear.dress(this.rBatter, { helmet: 0x0f8a4c, pads: true, gloves: 0x0f8a4c });
+    this.gear.dress(this.rBatter, { helmet: 0x0f8a4c, pads: true });
+    // batting gloves live on the bat handle (always gripping it); the bare hands shrink inside them
+    const top = gripGlove(0x0f8a4c, 1);
+    top.position.y = -0.05;
+    const bottom = gripGlove(0x0f8a4c, -1);
+    bottom.position.y = -0.16;
+    this.bat.add(top, bottom);
     // pose the realistic batter directly with the batting rig (its own bone lengths, no stand-in)
     this.rBatter.resetPose();
     this.rig = new BatterRig(Person.wrap(this.rBatter.root, this.rBatter.model, bipedBones(this.rBatter), this.rBatter.mixer));
@@ -216,6 +222,7 @@ export class World3D {
     cam.updateProjectionMatrix();
     // batter + bat
     const usedBat = this.rig.pose(v.batter, v.ballLook);
+    for (const h of ['L Hand', 'R Hand']) this.rBatter?.bone(h).scale.setScalar(0.45);
     this.batRT?.apply(true);
     placeBat(this.bat, usedBat);
     // ball
