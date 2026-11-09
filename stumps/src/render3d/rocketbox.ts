@@ -185,6 +185,16 @@ function pairs(): [string, string, string | null, string | null][] {
   return p;
 }
 
+/** This rig's bone names (mannequin style) -> the Rocketbox biped's bones, for posing it directly. */
+export function bipedBones(p: RbPerson): Map<string, THREE.Bone> {
+  const m = new Map<string, THREE.Bone>();
+  for (const [s, d] of pairs()) {
+    const b = p.bone(d);
+    if (b) m.set(s, b);
+  }
+  return m;
+}
+
 const _a = new THREE.Vector3();
 const _b = new THREE.Vector3();
 const _q = new THREE.Quaternion();

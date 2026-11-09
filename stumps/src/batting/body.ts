@@ -11,6 +11,16 @@ import CAPTURE from './capture.json';
 type Fam = 'drive' | 'off' | 'leg';
 const CJ = CAPTURE.joints;
 /** A frame of the captured swing (time relative to contact), as joint name -> position. */
+/** The body's spine has a fixed length: put the pelvis that far below the neck (same direction),
+ *  so the visible body can actually put its shoulders where this skeleton says. */
+function keepSpine(pelvis: V, neck: V): void {
+  const dir = norm(sub(pelvis, neck));
+  const p = add(neck, mul(dir, LIMB.spine));
+  pelvis.x = p.x;
+  pelvis.y = Math.min(0.88, Math.max(0.6, p.y));
+  pelvis.z = p.z;
+}
+
 let CS = 0; // capture -> our body scale (MediaPipe's skeleton is smaller than the game's)
 function captured(fam: Fam, tr: number): Record<string, V> {
   const clip = CAPTURE[fam] as number[][][];
@@ -27,7 +37,7 @@ function captured(fam: Fam, tr: number): Record<string, V> {
   CJ.forEach((n, i) => {
     const a = clip[k][i];
     const b = clip[k + 1][i];
-    out[n] = v((a[0] + (b[0] - a[0]) * u) * CS, (a[1] + (b[1] - a[1]) * u) * CS, (a[2] + (b[2] - a[2]) * u) * CS);
+    out[n] = v((a[0] + (b[0] - a[0]) * u) * CS, (a[1] + (b[1] - a[1]) * u) * CS + ANKLE, (a[2] + (b[2] - a[2]) * u) * CS); // capture heights are above the ankle
   });
   return out;
 }
@@ -45,7 +55,11 @@ function style(key: 'pelvisH' | 'leanX' | 'headX', tr: number): number {
   return c[k] + (c[k + 1] - c[k]) * (i - k);
 }
 
-export const LIMB = { thigh: 0.45, shin: 0.46, upper: 0.3, fore: 0.29, spine: 0.5, shoulder: 0.19, hip: 0.11 };
+// Bone lengths of the game's player bodies (Rocketbox male skeleton, measured in-game), so the
+// joints this file computes are exactly where the visible body can put them.
+export const LIMB = { thigh: 0.4, shin: 0.397, upper: 0.286, fore: 0.271, spine: 0.534, shoulder: 0.21, hip: 0.088 };
+export const ANKLE = 0.102; // ankle joint height above the floor
+export const HEAD = 0.162; // head joint above the middle of the shoulders
 
 export interface Skeleton {
   head: V;
@@ -193,9 +207,10 @@ export function batter(st: BatterState): Skeleton {
   const crouch = 0.08 + style('pelvisH', tr) * (LIMB.thigh + LIMB.shin);
   pelvis.x = (nk.x - style('leanX', tr)) * 0.6 + (pel.x * 0.55 + pF.x * 0.45) * 0.4;
   pelvis.z = pel.z * 0.55 + pF.z * 0.45;
-  pelvis.y = Math.min(0.95, Math.max(0.68, Math.min(pel.y, pF.y, crouch)));
+  pelvis.y = Math.min(0.87, Math.max(0.66, Math.min(pel.y, pF.y, crouch)));
+  keepSpine(pelvis, nk);
   const look = path ? sampleAt(path, Math.max(0, Math.min(t, T))).p : v(0, 1.2, 20);
-  const head = add(nk, add(mul(UP, 0.2), mul(norm(sub(look, nk)), 0.05)));
+  const head = add(nk, add(mul(norm(sub(nk, pelvis)), HEAD), mul(norm(sub(look, nk)), 0.04))); // the head sits on the line of the spine
   // ---- arms onto the handle: top (left) hand at the top, bottom (right) hand a hand-width below.
   // If the bat has gone further than the arms can reach (big follow-throughs), the bat comes
   // back to the hands rather than the hands leaving the bat.
@@ -218,8 +233,8 @@ export function batter(st: BatterState): Skeleton {
   const hipDir = norm(lerp(v(0, 0, 1), shLine, 0.5));
   const hipL = add(pelvis, mul(hipDir, LIMB.hip));
   const hipR = sub(pelvis, mul(hipDir, LIMB.hip));
-  const aL = add(ftL, v(0, 0.08 + liftL, 0));
-  const aR = add(ftR, v(0, 0.08 + liftR, 0));
+  const aL = add(ftL, v(0, ANKLE + liftL, 0));
+  const aR = add(ftR, v(0, ANKLE + liftR, 0));
   const kneePole = v(1, 0.1, 0.25); // knees bend toward the off side (the way he faces)
   const legL = ik2(hipL, aL, LIMB.thigh, LIMB.shin, kneePole);
   const legR = ik2(hipR, aR, LIMB.thigh, LIMB.shin, kneePole);
@@ -249,7 +264,7 @@ export function batter(st: BatterState): Skeleton {
     const off = v(pelvis.x - cPel.x, 0, pelvis.z - cPel.z);
     const at = (n: string) => add(C[n], off);
     const wEng = 1 - smooth(0.07, 0.24, Math.abs(tr)); // 1 at contact: engine shoulders
-    const cy = Math.min(0.98, Math.max(0.68, cPel.y));
+    const cy = Math.min(0.87, Math.max(0.62, cPel.y));
     pelvis.y = cy;
     const cHipL = at('hipL');
     const cHipR = at('hipR');
@@ -258,6 +273,7 @@ export function batter(st: BatterState): Skeleton {
     const shL = lerp(capSL, sL, wEng);
     const shR = lerp(capSR, sR, wEng);
     const neck = lerp(shL, shR, 0.5);
+    keepSpine(pelvis, neck);
     const headC = add(at('head'), mul(UP, 0.02));
     const head2 = lerp(headC, head, wEng);
     const hipDir2 = norm(sub(cHipL, cHipR));
@@ -283,8 +299,8 @@ export function batter(st: BatterState): Skeleton {
       knR: lR.mid,
       ftL: lL.end,
       ftR: lR.end,
-      toeL: add(lL.end, add(toeOut, v(0, -0.07, 0))),
-      toeR: add(lR.end, add(rotDir(toeOut, UP, -0.3), v(0, -0.07, 0))),
+      toeL: add(lL.end, add(toeOut, v(0, -ANKLE + 0.02, 0))),
+      toeR: add(lR.end, add(rotDir(toeOut, UP, -0.3), v(0, -ANKLE + 0.02, 0))),
       bat,
       look,
     };

@@ -14,7 +14,7 @@ import { Arena, createArena } from './arena';
 import { armour, makeBat, Person } from './people';
 import { kitMaterial, KitLook, loadPlayerAsset, PlayerAsset } from './playerModel';
 import { BatterRig, placeBat } from './poser';
-import { AVATARS, loadRocketbox, RbAsset, RbPerson, Retarget } from './rocketbox';
+import { AVATARS, bipedBones, loadRocketbox, RbAsset, RbPerson, Retarget } from './rocketbox';
 import { Gear } from './gear';
 import { BOWL_FROM, BOWL_TO, bowlerJoints, bowlerZ, wristFlick } from './bowling';
 
@@ -155,7 +155,9 @@ export class World3D {
     for (const p of [this.batter, this.keeper]) p.m.model.traverse((o) => (o as THREE.Mesh).isMesh && !(o as THREE.SkinnedMesh).isSkinnedMesh && (o.visible = false));
     this.rBatter = new RbPerson(rb, 'rb11', s);
     this.gear.dress(this.rBatter, { helmet: 0x0f8a4c, pads: true, gloves: 0x0f8a4c });
-    this.batRT = new Retarget({ root: this.batter.m.root, bones: this.batter.m.bones }, this.rBatter);
+    // pose the realistic batter directly with the batting rig (its own bone lengths, no stand-in)
+    this.rBatter.resetPose();
+    this.rig = new BatterRig(Person.wrap(this.rBatter.root, this.rBatter.model, bipedBones(this.rBatter), this.rBatter.mixer));
     this.rBowler = new RbPerson(rb, 'rb09', s);
     this.bowlRig = new BatterRig(this.bowler);
     this.bowlRT = new Retarget({ root: this.bowler.m.root, bones: this.bowler.m.bones }, this.rBowler);

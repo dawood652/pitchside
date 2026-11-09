@@ -33,6 +33,29 @@ export class Person {
     this.play('Idle_Loop');
   }
 
+  /** A Person view over another skeleton (e.g. a Rocketbox body), with bones looked up by this
+   *  rig's names, so the same IK and posing code drives it directly. */
+  static wrap(root: THREE.Object3D, model: THREE.Object3D, bones: Map<string, THREE.Bone>, mixer: THREE.AnimationMixer): Person {
+    const p = Object.create(Person.prototype) as Person;
+    p.m = { root, model, bones } as unknown as PlayerModel;
+    p.mixer = mixer;
+    p.acts = new Map();
+    p.cur = '';
+    p.childDir = new Map();
+    p.headFwd = new THREE.Vector3();
+    root.updateMatrixWorld(true);
+    for (const [n, child] of [['upperarm_l', 'lowerarm_l'], ['lowerarm_l', 'hand_l'], ['upperarm_r', 'lowerarm_r'], ['lowerarm_r', 'hand_r'], ['thigh_l', 'calf_l'], ['calf_l', 'foot_l'], ['thigh_r', 'calf_r'], ['calf_r', 'foot_r'], ['foot_l', 'ball_l'], ['foot_r', 'ball_r'], ['neck_01', 'Head']] as const) {
+      const c = bones.get(child)!;
+      const b = bones.get(n)!;
+      // child direction in the bone's local frame (works even if the child isn't a direct child)
+      const wpC = c.getWorldPosition(new THREE.Vector3());
+      p.childDir.set(n, b.worldToLocal(wpC).normalize());
+    }
+    bones.get('Head')!.getWorldQuaternion(_q).invert();
+    p.headFwd.set(0, 0, 1).applyQuaternion(_q);
+    return p;
+  }
+
   place(x: number, z: number, yaw: number): void {
     this.m.root.position.set(x, 0, z);
     this.m.root.rotation.y = yaw;

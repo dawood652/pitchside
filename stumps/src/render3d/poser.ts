@@ -90,6 +90,22 @@ export class BatterRig {
     this.basis('pelvis', rest.x, rest.y, hipX, up);
     const spines: [string, number][] = [['spine_01', 0.35], ['spine_02', 0.7], ['spine_03', 1]];
     for (const [n, k] of spines) this.basis(n, rest.x, rest.y, hipX.clone().lerp(shX, k), up);
+    // collarbones: lift / drop each shoulder onto the skeleton's shoulder point (limited swing)
+    for (const [s2, sh] of [['l', sk.shL], ['r', sk.shR]] as const) {
+      const cl = p.m.bones.get(`clavicle_${s2}`);
+      const ua = p.m.bones.get(`upperarm_${s2}`);
+      if (!cl || !ua) continue;
+      const c0 = cl.getWorldPosition(new THREE.Vector3());
+      const from = ua.getWorldPosition(new THREE.Vector3()).sub(c0).normalize();
+      const to = W(sh).sub(c0).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(from, to);
+      const angle = 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+      const lim = new THREE.Quaternion().slerp(q, Math.min(1, 0.6 / Math.max(1e-3, angle)));
+      const cw = cl.getWorldQuaternion(new THREE.Quaternion());
+      const pq = cl.parent!.getWorldQuaternion(new THREE.Quaternion()).invert();
+      cl.quaternion.copy(pq.multiply(lim.multiply(cw)));
+      cl.updateMatrixWorld(true);
+    }
     // head on the ball
     p.look(ball ? W(ball) : W(sk.look), 1);
     let bat = sk.bat;
@@ -150,11 +166,11 @@ export class BatterRig {
         toAxis.sub(d.clone().multiplyScalar(toAxis.dot(d)));
         const ax = new THREE.Vector3().crossVectors(seg, toAxis);
         if (ax.lengthSq() < 1e-10) continue;
-        p.turn(bone.name, ax.normalize(), Math.min(ang, seg.angleTo(toAxis) + 0.6));
+        p.turn(`${f}_0${j}_${s}`, ax.normalize(), Math.min(ang, seg.angleTo(toAxis) + 0.6));
       }
     }
     const th = p.m.bones.get(`thumb_02_${s}`);
-    if (th) p.turn(th.name, d, 0.5 * side);
+    if (th) p.turn(`thumb_02_${s}`, d, 0.5 * side);
   }
 }
 
