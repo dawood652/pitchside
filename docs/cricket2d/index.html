@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cover Drive Test</title>
+<style>
+  :root { --bg: #0e1a12; --ink: #f2f4ef; --muted: #9fb3a5; --chip: #1c2f22; --chip-on: #3fbf74; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 15px/1.4 system-ui, -apple-system, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  canvas { flex: 1; width: 100%; min-height: 0; display: block; touch-action: none; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px 14px; }
+  .bar h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 650; }
+  button { background: var(--chip); color: var(--ink); border: 0; border-radius: 999px; padding: 8px 14px; font: inherit; cursor: pointer; }
+  button.on { background: var(--chip-on); color: #062010; font-weight: 650; }
+  input[type=range] { flex: 1; min-width: 160px; accent-color: var(--chip-on); }
+  .hint { color: var(--muted); font-size: 13px; width: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="bar">
+  <h1>Cover drive · 2D test</h1>
+  <button id="play" class="on">Pause</button>
+  <button data-s="1" class="on">1×</button>
+  <button data-s="0.5">½×</button>
+  <button data-s="0.2">Slow</button>
+  <button id="ghost">Key poses</button>
+  <input id="scrub" type="range" min="0" max="1000" value="0" />
+  <div class="hint">Space = pause · drag the slider to scrub frame by frame</div>
+</div>
+<script>
+// 2D cover drive: hand-keyed poses (side-on view from point), smooth monotone interpolation,
+// two-bone IK for arms and legs so hands stay on the bat and feet stay planted.
+(function (G) {
+  const L = { thigh: 0.44, shin: 0.42, upper: 0.29, fore: 0.33, spine: 0.5, ankle: 0.08 };
+  const CH = ['px', 'py', 'lean', 'sw', 'fx', 'fy', 'bx', 'by', 'gx', 'gy', 'bat', 'head'];
+  // t (s, contact = 0) then the channels above
+  const STANCE = [0.08, 0.84, 22, 0.13, 0.30, 0, -0.14, 0, 0.12, 0.9, 16, 0];
+  const KEYS = [
+    [-1.1, ...STANCE],
+    [-0.75, ...STANCE],
+    [-0.55, 0.11, 0.83, 22, 0.13, 0.33, 0, -0.06, 0, 0.1, 0.96, 30, 0], // trigger
+    [-0.33, 0.24, 0.84, 17, 0.14, 0.58, 0.12, -0.06, 0, 0.02, 1.12, 125, 0], // backlift, front foot up
+    [-0.17, 0.4, 0.79, 22, 0.13, 0.86, 0, -0.05, 0, 0.1, 1.2, 150, 4], // front foot lands
+    [-0.07, 0.46, 0.76, 27, 0.11, 0.86, 0, -0.04, 0.02, 0.42, 1.0, 70, 8], // downswing
+    [0, 0.48, 0.75, 30, 0.1, 0.86, 0, -0.02, 0.05, 0.66, 0.8, 6, 10], // contact
+    [0.07, 0.49, 0.76, 28, 0.06, 0.86, 0, -0.01, 0.06, 0.95, 0.88, -70, 8],
+    [0.13, 0.49, 0.77, 25, 0.0, 0.86, 0, -0.01, 0.06, 1.1, 1.08, -105, 6], // extension toward the target
+    [0.22, 0.48, 0.78, 20, 0.03, 0.86, 0, 0.0, 0.06, 0.95, 1.5, -150, 4],
+    [0.42, 0.46, 0.79, 16, 0.04, 0.86, 0, 0.0, 0.06, 0.9, 1.42, -200, 2], // high finish, bat over the front shoulder
+    [0.95, 0.46, 0.79, 16, 0.04, 0.86, 0, 0.0, 0.06, 0.9, 1.42, -200, 2],
+  ];
+  const T0 = KEYS[0][0], T1 = KEYS[KEYS.length - 1][0];
+  // monotone cubic (no overshoot, holds stay still)
+  const ts = KEYS.map((k) => k[0]);
+  const tans = CH.map((_, c) => {
+    const y = KEYS.map((k) => k[c + 1]);
+    const n = y.length, d = [], m = new Array(n).fill(0);
+    for (let i = 0; i < n - 1; i++) d.push((y[i + 1] - y[i]) / (ts[i + 1] - ts[i]));
+    m[0] = d[0]; m[n - 1] = d[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (d[i - 1] * d[i] <= 0) { m[i] = 0; continue; }
+      m[i] = (d[i - 1] + d[i]) / 2;
+      const a = m[i] / d[i - 1], b = m[i] / d[i], s = a * a + b * b;
+      if (s > 9) m[i] *= 3 / Math.sqrt(s);
+    }
+    for (let i = 0; i < n - 1; i++) if (d[i] === 0) { m[i] = 0; m[i + 1] = 0; }
+    return { y, m };
+  });
+  function chan(t) {
+    t = Math.min(T1, Math.max(T0, t));
+    let i = 0; while (i < ts.length - 2 && t > ts[i + 1]) i++;
+    const h = ts[i + 1] - ts[i], u = (t - ts[i]) / h, u2 = u * u, u3 = u2 * u;
+    const o = {};
+    CH.forEach((name, c) => {
+      const { y, m } = tans[c];
+      o[name] = (2 * u3 - 3 * u2 + 1) * y[i] + (u3 - 2 * u2 + u) * h * m[i] + (-2 * u3 + 3 * u2) * y[i + 1] + (u3 - u2) * h * m[i + 1];
+    });
+    return o;
+  }
+  const add = (a, b) => ({ x: a.x + b.x, y: a.y + b.y }), sub = (a, b) => ({ x: a.x - b.x, y: a.y - b.y });
+  const mul = (a, k) => ({ x: a.x * k, y: a.y * k }), len = (a) => Math.hypot(a.x, a.y);
+  function ik(a, target, l1, l2, pole) {
+    const raw = len(sub(target, a));
+    const d = Math.min(l1 + l2 - 1e-4, Math.max(Math.abs(l1 - l2) + 1e-3, raw));
+    const dir = mul(sub(target, a), 1 / (raw || 1));
+    const along = (l1 * l1 - l2 * l2 + d * d) / (2 * d);
+    const h = Math.sqrt(Math.max(0, l1 * l1 - along * along));
+    let p = { x: -dir.y, y: dir.x };
+    if (p.x * pole.x + p.y * pole.y < 0) p = mul(p, -1);
+    return { mid: add(add(a, mul(dir, along)), mul(p, h)), end: add(a, mul(dir, d)), reach: raw / (l1 + l2) };
+  }
+  function pose(t) {
+    const c = chan(t);
+    const r = (c.lean * Math.PI) / 180;
+    const up = { x: Math.sin(r), y: Math.cos(r) }, across = { x: Math.cos(r), y: -Math.sin(r) };
+    const pel = { x: c.px, y: c.py };
+    const neck = add(pel, mul(up, L.spine));
+    const shL = add(neck, mul(across, c.sw)), shR = sub(neck, mul(across, c.sw));
+    const hipL = add(pel, { x: 0.09, y: 0 }), hipR = add(pel, { x: -0.09, y: 0 });
+    const legF = ik(hipL, { x: c.fx, y: L.ankle + c.fy }, L.thigh, L.shin, { x: 1, y: 0.2 });
+    const legB = ik(hipR, { x: c.bx, y: L.ankle + c.by }, L.thigh, L.shin, { x: 1, y: 0.2 });
+    const th = (c.bat * Math.PI) / 180;
+    const bd = { x: -Math.sin(th), y: -Math.cos(th) }; // handle -> toe
+    const gT = { x: c.gx, y: c.gy }, gB = add(gT, mul(bd, 0.11)), H = sub(gT, mul(bd, 0.06));
+    const armF = ik(shL, gT, L.upper, L.fore, { x: 1, y: 0.3 });
+    const armB = ik(shR, gB, L.upper, L.fore, { x: -0.5, y: -1 });
+    const hr = ((c.lean + c.head) * Math.PI) / 180;
+    const head = add(neck, { x: Math.sin(hr) * 0.15 + 0.02, y: Math.cos(hr) * 0.15 });
+    return { t, c, pel, neck, shL, shR, hipL, hipR, legF, legB, armF, armB, H, bd, gT, gB, head, toe: add(H, mul(bd, 0.86)), sweet: add(H, mul(bd, 0.64)) };
+  }
+  const CONTACT = pose(0).sweet;
+  function ball(t) {
+    const R = { x: 17, y: 2.1 }, B = { x: CONTACT.x + 1.7, y: 0.036 };
+    if (t < -0.72) return null;
+    if (t < -0.09) { const s = (t + 0.72) / 0.63; return { x: R.x + (B.x - R.x) * s, y: R.y + (B.y - R.y) * Math.pow(s, 1.25) }; }
+    if (t < 0) { const s = (t + 0.09) / 0.09; return { x: B.x + (CONTACT.x - B.x) * s, y: B.y + (CONTACT.y - B.y) * s }; }
+    const u = t; return { x: CONTACT.x + 15 * u, y: Math.max(0.036, CONTACT.y + 2.2 * u - 4.9 * u * u) };
+  }
+  G.Anim = { pose, ball, T0, T1, L, KEYS };
+})(typeof window !== 'undefined' ? window : globalThis);
+
+</script>
+<script>
+const A = window.Anim;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+let W = 0, H = 0, S = 1, OX = 0, OY = 0;
+function resize() {
+  const r = cv.getBoundingClientRect(), d = Math.min(2, window.devicePixelRatio || 1);
+  cv.width = r.width * d; cv.height = r.height * d; W = cv.width; H = cv.height;
+  S = Math.min(H / 2.6, W / 4.2); // pixels per metre
+  OX = W * 0.36 - 0.3 * S; OY = H * 0.88;
+}
+addEventListener('resize', resize); resize();
+const X = (p) => OX + p.x * S, Y = (p) => OY - p.y * S;
+
+const C = { shirt: '#1f9a55', shirtD: '#167843', trou: '#187a45', trouD: '#105c33', skin: '#e2b48d', skinD: '#c9946b',
+  pad: '#f6f4ec', padD: '#d8d4c7', helm: '#0d5a32', grille: '#9aa3ab', glove: '#fbfbf7', line: '#0b130e', shoe: '#232629', bat: '#e9cf95', batD: '#c9a96a', grip: '#1b1b1b' };
+const OUT = 0.012; // outline thickness (m)
+
+function seg(a, b, w, col) {
+  ctx.lineCap = 'round';
+  ctx.strokeStyle = C.line; ctx.lineWidth = (w + OUT * 2) * S; line(a, b);
+  ctx.strokeStyle = col; ctx.lineWidth = w * S; line(a, b);
+}
+function line(a, b) { ctx.beginPath(); ctx.moveTo(X(a), Y(a)); ctx.lineTo(X(b), Y(b)); ctx.stroke(); }
+function dot(p, r, col) {
+  ctx.beginPath(); ctx.arc(X(p), Y(p), (r + OUT) * S, 0, 7); ctx.fillStyle = C.line; ctx.fill();
+  ctx.beginPath(); ctx.arc(X(p), Y(p), r * S, 0, 7); ctx.fillStyle = col; ctx.fill();
+}
+const lerp = (a, b, k) => ({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
+
+function leg(L, hip, front, dark) {
+  const knee = L.mid, ank = L.end;
+  seg(hip, knee, 0.12, dark ? C.trouD : C.trou);
+  // pad: shin guard from just above the knee to the ankle, with a knee roll
+  const top = lerp(knee, hip, 0.18);
+  seg(top, ank, 0.125, dark ? C.padD : C.pad);
+  dot(lerp(knee, hip, 0.05), 0.07, dark ? C.padD : C.pad);
+  // shoe: points down the pitch for the striding front foot, toward the camera-ish for the back foot
+  const dir = front ? { x: 1, y: 0 } : { x: 0.55, y: 0 };
+  const toe = { x: ank.x + dir.x * 0.17, y: Math.max(0.035, ank.y - 0.05) };
+  const heel = { x: ank.x - 0.04, y: ank.y - 0.04 };
+  seg(heel, toe, 0.07, C.shoe);
+}
+function arm(Ar, sh, dark) {
+  seg(sh, Ar.mid, 0.1, dark ? C.shirtD : C.shirt); // short sleeve over the upper arm
+  seg(Ar.mid, Ar.end, 0.075, dark ? C.skinD : C.skin);
+  dot(Ar.end, 0.055, C.glove);
+}
+function bat(p) {
+  const h = p.H, d = p.bd, n = { x: -d.y, y: d.x };
+  const at = (k, w) => ({ x: h.x + d.x * k + n.x * w, y: h.y + d.y * k + n.y * w });
+  seg(h, at(0.3, 0), 0.034, C.grip);
+  // blade with a little shoulder taper and a toe
+  const pts = [at(0.29, 0.026), at(0.34, 0.048), at(0.84, 0.05), at(0.865, 0.035), at(0.865, -0.035), at(0.84, -0.045), at(0.34, -0.044), at(0.29, -0.026)];
+  ctx.beginPath(); pts.forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.closePath();
+  ctx.lineJoin = 'round'; ctx.lineWidth = OUT * 2 * S; ctx.strokeStyle = C.line; ctx.stroke();
+  ctx.fillStyle = C.bat; ctx.fill();
+  ctx.beginPath(); [at(0.36, -0.03), at(0.82, -0.032), at(0.82, -0.006), at(0.36, -0.006)].forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.fillStyle = C.batD; ctx.fill();
+}
+function body(p, alpha) {
+  ctx.globalAlpha = alpha;
+  // shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.22)'; ctx.beginPath();
+  ctx.ellipse(X({ x: (p.legF.end.x + p.legB.end.x) / 2, y: 0 }), Y({ x: 0, y: 0 }), (Math.abs(p.legF.end.x - p.legB.end.x) / 2 + 0.25) * S, 0.05 * S, 0, 0, 7); ctx.fill();
+  leg(p.legB, p.hipR, false, true);
+  arm(p.armB, p.shR, true); // back arm behind the body
+  // torso: shoulders to hips, rounded
+  ctx.beginPath(); [p.shL, p.shR, { x: p.hipR.x - 0.02, y: p.hipR.y }, { x: p.hipL.x + 0.02, y: p.hipL.y }].forEach((q, i) => (i ? ctx.lineTo(X(q), Y(q)) : ctx.moveTo(X(q), Y(q)))); ctx.closePath();
+  ctx.lineJoin = 'round'; ctx.lineWidth = (0.16 + OUT * 2) * S; ctx.strokeStyle = C.line; ctx.stroke();
+  ctx.lineWidth = 0.16 * S; ctx.strokeStyle = C.shirt; ctx.stroke(); ctx.fillStyle = C.shirt; ctx.fill();
+  seg(lerp(p.hipL, p.hipR, 0.5), lerp(p.hipL, p.hipR, 0.5), 0.2, C.trou); // seat
+  leg(p.legF, p.hipL, true, false);
+  // head: helmet with peak and grille facing the bowler
+  seg(p.neck, lerp(p.neck, p.head, 0.5), 0.07, C.skin);
+  const hd = p.head; dot(hd, 0.105, C.skin);
+  ctx.save(); ctx.translate(X(hd), Y(hd));
+  const r = 0.112 * S;
+  ctx.beginPath(); ctx.arc(0, 0, r + OUT * S, Math.PI * 0.95, Math.PI * 2.08); ctx.closePath(); ctx.fillStyle = C.line; ctx.fill();
+  ctx.beginPath(); ctx.arc(0, 0, r, Math.PI * 0.95, Math.PI * 2.08); ctx.closePath(); ctx.fillStyle = C.helm; ctx.fill();
+  ctx.fillStyle = C.helm; ctx.strokeStyle = C.line; ctx.lineWidth = OUT * S;
+  ctx.beginPath(); ctx.ellipse(r * 0.95, -r * 0.08, r * 0.42, r * 0.11, 0.1, 0, 7); ctx.fill(); ctx.stroke(); // peak
+  ctx.strokeStyle = C.grille; ctx.lineWidth = 0.011 * S; ctx.lineCap = 'round';
+  for (const y of [0.15, 0.42, 0.7]) { ctx.beginPath(); ctx.moveTo(r * 0.55, r * y); ctx.quadraticCurveTo(r * 1.15, r * (y + 0.05), r * 0.98, r * (y + 0.12)); ctx.stroke(); }
+  ctx.beginPath(); ctx.moveTo(r * 0.98, r * 0.02); ctx.lineTo(r * 0.92, r * 0.9); ctx.stroke();
+  ctx.restore();
+  bat(p);
+  arm(p.armF, p.shL, false); // top hand over the bat
+  dot(p.gB, 0.055, C.glove); // bottom glove drawn over the handle too
+  ctx.globalAlpha = 1;
+}
+function scene(t) {
+  // sky, stand, grass, pitch
+  const g = ctx.createLinearGradient(0, 0, 0, OY);
+  g.addColorStop(0, '#7fb6e6'); g.addColorStop(0.55, '#cfe5f2'); g.addColorStop(0.56, '#2e3a4a'); g.addColorStop(0.7, '#3b4a5c'); g.addColorStop(0.71, '#3f9d4f'); g.addColorStop(1, '#4fb25d');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // crowd speckle
+  ctx.save(); for (let i = 0; i < 420; i++) { const x = ((i * 97.13) % 1) * W, y = OY * (0.565 + ((i * 0.6180339) % 1) * 0.13); ctx.fillStyle = ['#e9e4d8', '#c9473f', '#2e4a7a', '#d9a63b', '#1fb6e8', '#f2c94c'][i % 6]; ctx.globalAlpha = 0.55; ctx.fillRect(x, y, 0.025 * S, 0.035 * S); } ctx.restore();
+  ctx.fillStyle = '#4fb25d'; ctx.fillRect(0, OY, W, H - OY);
+  ctx.fillStyle = '#d9c393'; ctx.fillRect(0, OY - 0.012 * S, W, 0.07 * S);
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(X({ x: 0.0, y: 0 }) - 0.02 * S, OY - 0.012 * S, 0.04 * S, 0.07 * S); // popping crease
+  // stumps and bails behind the batter
+  const sx = -0.62;
+  for (const k of [-0.03, 0, 0.03]) seg({ x: sx + k, y: 0 }, { x: sx + k, y: 0.71 }, 0.034, '#f4efe2');
+  seg({ x: sx - 0.05, y: 0.725 }, { x: sx + 0.05, y: 0.725 }, 0.018, '#e6d2a6');
+}
+function ballDraw(t) {
+  const b = A.ball(t); if (!b) return;
+  if (t < 0.6) {
+    ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.beginPath(); ctx.ellipse(X(b), Y({ x: 0, y: 0 }), 0.04 * S, 0.012 * S, 0, 0, 7); ctx.fill();
+    dot(b, 0.04, '#c4232b');
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 0.006 * S; ctx.beginPath(); ctx.arc(X(b), Y(b), 0.026 * S, 0.3, 2.6); ctx.stroke();
+  }
+}
+
+let t = A.T0, speed = 1, playing = true, ghost = false, last = performance.now();
+const scrub = document.getElementById('scrub');
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (playing) { t += dt * speed; if (t > A.T1) t = A.T0; scrub.value = ((t - A.T0) / (A.T1 - A.T0)) * 1000; }
+  scene(t);
+  if (ghost) for (const k of A.KEYS) body(A.pose(k[0]), 0.16);
+  body(A.pose(t), 1);
+  ballDraw(t);
+  if (Math.abs(t) < 0.02) { const p = A.pose(0).sweet; ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 0.01 * S; ctx.beginPath(); ctx.arc(X(p), Y(p), 0.1 * S, 0, 7); ctx.stroke(); }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__setT = (x) => { t = x; playing = false; };
+const playBtn = document.getElementById('play');
+function setPlay(v) { playing = v; playBtn.textContent = v ? 'Pause' : 'Play'; playBtn.classList.toggle('on', v); last = performance.now(); }
+playBtn.onclick = () => setPlay(!playing);
+addEventListener('keydown', (e) => { if (e.code === 'Space') { e.preventDefault(); setPlay(!playing); } });
+document.querySelectorAll('[data-s]').forEach((b) => (b.onclick = () => { speed = +b.dataset.s; document.querySelectorAll('[data-s]').forEach((x) => x.classList.toggle('on', x === b)); }));
+document.getElementById('ghost').onclick = (e) => { ghost = !ghost; e.target.classList.toggle('on', ghost); };
+scrub.oninput = () => { setPlay(false); t = A.T0 + (scrub.value / 1000) * (A.T1 - A.T0); };
+</script>
+</body>
+</html>
