@@ -17,8 +17,8 @@ import { Match, store, TEAMS } from './ui/match';
 import { Hud } from './ui/hud';
 import { Screens, Settings } from './ui/screens';
 import { readPad } from './input';
-import { Side2D } from './render2d/side2d';
-import { animTime, ball2d, mapTarget } from './render2d/duel';
+import { kitOf, Side2D } from './render2d/side2d';
+import { animTime, ball2d, bounceOf, camFocus, mapTarget } from './render2d/duel';
 
 const RUNUP = 1.3;
 const LOFT_DIST = 64;
@@ -504,10 +504,17 @@ class Game extends Phaser.Scene {
     document.body.classList.toggle('side', this.side.visible);
     if (this.side.visible) {
       const bowledAt = this.bowled ? tb - this.T : null;
+      const b2 = ball2d(ball, tb, this.contact?.t ?? null);
+      const bounce = this.path ? bounceOf(this.path) : null;
       this.side.render({
         a: this.phase === 'runup' && this.t < 0.1 ? -2 : animTime(tb, this.tIdeal, this.tapT),
-        ball: ball2d(ball, tb, this.contact?.t ?? null),
+        ball: b2,
+        trail: [1, 2, 3, 4, 5].map((i) => ball2d(this.ballPos(tb - 0.012 * i), tb - 0.012 * i, this.contact?.t ?? null)).filter((q): q is NonNullable<typeof q> => q !== null),
         bowled: bowledAt !== null && bowledAt > 0 ? bowledAt : null,
+        bowlerT: tb,
+        focus: camFocus(tb, b2, this.contact?.t ?? null),
+        bounce: bounce && tb > bounce.t ? { x: bounce.x, age: tb - bounce.t } : null,
+        fieldKit: kitOf(TEAMS[this.m.opp].kit),
       });
     }
     if (!menuish) {
