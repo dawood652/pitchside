@@ -177,6 +177,7 @@ class Game extends Phaser.Scene {
     const c = CAMS[this.screens.settings.camera];
     this.cam.pos = { ...c.pos };
     this.cam.look = { ...c.look };
+    this.cam.setViewport(this.cam.w, this.cam.h); // back to the batting lens after the wide shot
     this.cam.update();
   }
 
@@ -411,13 +412,16 @@ class Game extends Phaser.Scene {
       this.rt += dt * (Math.abs(this.rt - key) < 0.3 ? 0.22 : 0.75);
       if (this.rt > this.replayEnd) this.advance();
     }
-    // camera follows a struck ball
-    if (this.contact && this.flight && bt > this.contact.t + 0.35 && this.behind === null) {
+    // after the hit: rise to a high, wide view of the whole ground (lens widens too), drifting a
+    // little toward the ball so you see where it goes and who chases it
+    if (this.contact && this.flight && bt > this.contact.t + 0.25 && this.behind === null) {
       const b = this.ballPos(bt);
       if (b) {
-        const want = v(b.x * 0.45, 9 + Math.hypot(b.x, b.z) * 0.14 + b.y * 0.3, b.z * 0.45 - 14);
-        this.cam.pos = lerp(this.cam.pos, want, Math.min(1, dt * 3));
-        this.cam.look = lerp(this.cam.look, v(b.x, b.y * 0.5, b.z), Math.min(1, dt * 4));
+        const k = Math.min(1, dt * 3.2);
+        const g = v(b.x * 0.3, 0, 6 + b.z * 0.3);
+        this.cam.pos = lerp(this.cam.pos, v(g.x, 92, g.z - 24), k);
+        this.cam.look = lerp(this.cam.look, g, k);
+        this.cam.F += (0.95 * this.cam.h - this.cam.F) * k;
         this.cam.update();
       }
     }
@@ -490,6 +494,29 @@ class Game extends Phaser.Scene {
       this.hud.drawMap(this.m, { fielders, trail }, TEAMS[this.m.opp].kit);
     }
     this.g.clear();
+    // wide shot: players and ball are tiny from up there, so mark them (team-coloured dots, a
+    // bright ring and shadow for the ball)
+    if (!menuish && this.cam.pos.y > 25) {
+      const fade = Math.min(1, (this.cam.pos.y - 25) / 25);
+      const kit = TEAMS[this.m.opp].kit;
+      for (const f of fielders) {
+        const q = this.cam.p(f);
+        if (q.s <= 0) continue;
+        this.g.fillStyle(0x000000, 0.35 * fade).fillCircle(q.x, q.y + 1, 7);
+        this.g.fillStyle(kit, fade).fillCircle(q.x, q.y, 5.5);
+        this.g.lineStyle(1.5, 0xffffff, fade).strokeCircle(q.x, q.y, 5.5);
+      }
+      const bp = this.ballPos(bt);
+      if (bp) {
+        const sh = this.cam.p(v(bp.x, 0, bp.z));
+        const q = this.cam.p(bp);
+        if (q.s > 0) {
+          this.g.fillStyle(0x000000, 0.3 * fade).fillEllipse(sh.x, sh.y, 10, 5);
+          this.g.lineStyle(2.5, 0xffe14d, fade).strokeCircle(q.x, q.y, 9);
+          this.g.fillStyle(0xffffff, fade).fillCircle(q.x, q.y, 3.5);
+        }
+      }
+    }
   }
 }
 
