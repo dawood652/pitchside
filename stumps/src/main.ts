@@ -17,8 +17,6 @@ import { Match, store, TEAMS } from './ui/match';
 import { Hud } from './ui/hud';
 import { Screens, Settings } from './ui/screens';
 import { readPad } from './input';
-import { kitOf, Side2D } from './render2d/side2d';
-import { animTime, ball2d, bounceOf, camFocus, mapTarget } from './render2d/duel';
 
 const RUNUP = 1.3;
 const LOFT_DIST = 64;
@@ -50,8 +48,6 @@ class Game extends Phaser.Scene {
   private behind: boolean | null = null; // edge to the keeper: caught?
   private target: V | null = null;
   private hover: V | null = null;
-  private side!: Side2D; // 2D side-on batting view
-  private aim2d: V | null = null; // last spot tapped on the field map
   private bowled = false;
   private settled = false;
   private skel!: Skeleton;
@@ -91,16 +87,7 @@ class Game extends Phaser.Scene {
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if ((p.event as PointerEvent | undefined)?.pointerType === 'mouse' || !p.wasTouch) this.hover = this.cam.ground(p.x, p.y);
     });
-    // in the 2D batting view a tap anywhere hits toward the last aimed spot (default: straight)
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.press(this.side.visible ? (this.aim2d ?? v(0, 0, 40)) : this.cam.ground(p.x, p.y)));
-    this.side = new Side2D(document.getElementById('world')!);
-    // the field map: tap where you want it to go (aims and hits in one tap)
-    const map = document.getElementById('map') as HTMLCanvasElement | null;
-    map?.addEventListener('pointerdown', (e) => {
-      e.preventDefault();
-      this.aim2d = mapTarget(map, e);
-      this.press(this.aim2d);
-    });
+    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => this.press(this.cam.ground(p.x, p.y)));
     this.hud.pause.addEventListener('click', () => this.setPaused(true));
     // keyboard
     const kb = this.input.keyboard!;
@@ -114,7 +101,6 @@ class Game extends Phaser.Scene {
       w.setAds(DEFAULT_ADS);
       loadAds().then((a) => w.setAds(a));
       w.setTeams(TEAMS[this.m.team].kit, TEAMS[this.m.opp].kit);
-      this.side.setKit(TEAMS[this.m.team].kit);
       w.setQuality(this.screens.settings.quality);
       document.getElementById('boot')?.classList.add('gone');
     });
@@ -160,7 +146,6 @@ class Game extends Phaser.Scene {
 
   private start(): void {
     this.world?.setTeams(TEAMS[this.m.team].kit, TEAMS[this.m.opp].kit);
-    this.side.setKit(TEAMS[this.m.team].kit);
     audioStart();
     startAmbience();
     setMusic(this.screens.settings.music);
@@ -205,7 +190,7 @@ class Game extends Phaser.Scene {
     this.resetBall();
     this.hud.clearFeedback();
     const first = !store.get('played', false);
-    this.hud.setHint(first && this.m.balls < 3 ? ['Tap the field map where you want to hit it, as the ball arrives', 'Tap when the white line is in the green', 'Turn on LOFT to hit it in the air'][this.m.balls] : '');
+    this.hud.setHint(first && this.m.balls < 3 ? ['Tap the field where you want to hit it, as the ball arrives', 'Tap when the white line is in the green', 'Turn on LOFT to hit it in the air'][this.m.balls] : '');
   }
 
   private ballTime(): number {
@@ -496,26 +481,6 @@ class Game extends Phaser.Scene {
       const aim = menuish ? null : this.target && !this.contact ? this.target : !this.target && (this.phase === 'runup' || this.phase === 'ball') ? (padTarget ?? this.hover) : null;
       this.world.setAim(aim, aim ? this.isLofted(aim) : false, !!this.target);
       this.world.frame(this.cam, { batter: this.skel, ball, ballLook: look, fielders, keeper: v(1.0, 0, -3.0), bowler: { z: menuish ? 26 : bz, phase: menuish ? 'idle' : bphase, t: menuish ? null : bt }, bowled: this.bowled && (this.phase === 'result' || (this.phase === 'replay' && bt > this.T + 0.02)) }, dt);
-    }
-    // 2D side-on view for the duel (and its replay); cut to the 3D field once the ball is struck
-    const duel = this.phase === 'runup' || this.phase === 'ball' || this.phase === 'replay' || (this.phase === 'result' && !this.contact);
-    const struckAway = this.contact && bt > this.contact.t + 0.35;
-    this.side.setVisible(duel && !struckAway);
-    document.body.classList.toggle('side', this.side.visible);
-    if (this.side.visible) {
-      const bowledAt = this.bowled ? tb - this.T : null;
-      const b2 = ball2d(ball, tb, this.contact?.t ?? null);
-      const bounce = this.path ? bounceOf(this.path) : null;
-      this.side.render({
-        a: this.phase === 'runup' && this.t < 0.1 ? -2 : animTime(tb, this.tIdeal, this.tapT),
-        ball: b2,
-        trail: [1, 2, 3, 4, 5].map((i) => ball2d(this.ballPos(tb - 0.012 * i), tb - 0.012 * i, this.contact?.t ?? null)).filter((q): q is NonNullable<typeof q> => q !== null),
-        bowled: bowledAt !== null && bowledAt > 0 ? bowledAt : null,
-        bowlerT: tb,
-        focus: camFocus(tb, b2, this.contact?.t ?? null),
-        bounce: bounce && tb > bounce.t ? { x: bounce.x, age: tb - bounce.t } : null,
-        fieldKit: kitOf(TEAMS[this.m.opp].kit),
-      });
     }
     if (!menuish) {
       const live = this.phase === 'runup' || this.phase === 'ball';
